@@ -1,0 +1,92 @@
+import type { NodeDefinition } from '../types';
+
+export const scheduleTrigger: NodeDefinition = {
+  type: 'scheduleTrigger',
+  displayName: 'Schedule',
+  group: 'trigger',
+  version: 1,
+  description: 'Runs the workflow on a repeating schedule — every few minutes, daily, weekly or a custom cron expression.',
+  icon: 'Clock',
+  color: '#8b5cf6',
+  inputs: 0,
+  outputs: [{ name: 'main', label: 'Output' }],
+  triggerKind: 'schedule',
+  properties: [
+    {
+      name: 'mode',
+      label: 'Repeat',
+      type: 'select',
+      default: 'interval',
+      options: [
+        { label: 'Every X minutes', value: 'interval' },
+        { label: 'Every hour', value: 'hourly' },
+        { label: 'Every day', value: 'daily' },
+        { label: 'Every week', value: 'weekly' },
+        { label: 'Every month', value: 'monthly' },
+        { label: 'Custom cron expression', value: 'cron' },
+      ],
+    },
+    {
+      name: 'minutes',
+      label: 'Interval (minutes)',
+      type: 'number',
+      default: 15,
+      displayOptions: { show: { mode: ['interval'] } },
+    },
+    {
+      name: 'minute',
+      label: 'At minute',
+      type: 'number',
+      default: 0,
+      displayOptions: { show: { mode: ['hourly', 'daily', 'weekly', 'monthly'] } },
+    },
+    {
+      name: 'hour',
+      label: 'At hour (0-23)',
+      type: 'number',
+      default: 9,
+      displayOptions: { show: { mode: ['daily', 'weekly', 'monthly'] } },
+    },
+    {
+      name: 'weekday',
+      label: 'Day of week',
+      type: 'select',
+      default: '1',
+      options: [
+        { label: 'Monday', value: '1' },
+        { label: 'Tuesday', value: '2' },
+        { label: 'Wednesday', value: '3' },
+        { label: 'Thursday', value: '4' },
+        { label: 'Friday', value: '5' },
+        { label: 'Saturday', value: '6' },
+        { label: 'Sunday', value: '0' },
+      ],
+      displayOptions: { show: { mode: ['weekly'] } },
+    },
+    {
+      name: 'dayOfMonth',
+      label: 'Day of month',
+      type: 'number',
+      default: 1,
+      displayOptions: { show: { mode: ['monthly'] } },
+    },
+    {
+      name: 'cron',
+      label: 'Cron expression',
+      type: 'string',
+      default: '0 9 * * *',
+      placeholder: '0 9 * * *',
+      description: 'Standard five-field cron: minute hour day-of-month month day-of-week.',
+      displayOptions: { show: { mode: ['cron'] } },
+    },
+    {
+      name: 'timezone',
+      label: 'Timezone',
+      type: 'string',
+      default: 'Asia/Kolkata',
+      description: 'IANA timezone name, e.g. Asia/Kolkata, Europe/London, UTC.',
+    },
+  ],
+};
+
+export default scheduleTrigger;
