@@ -99,6 +99,66 @@ export const connectionDefinitions: ConnectionDefinition[] = [
     ],
   },
   {
+    type: 'googleServiceAccount',
+    displayName: 'Google (Service Account)',
+    description:
+      'The simplest way to connect Google Sheets. Paste a JSON key once, then share each spreadsheet with the service account email. Nothing ever expires and nobody has to re-authorise.',
+    icon: 'Table2',
+    previewFields: ['clientEmail', 'projectId'],
+    properties: [
+      {
+        name: 'setup',
+        label: 'One-time setup',
+        type: 'notice',
+        description:
+          '1. Go to console.cloud.google.com → create a project. 2. Enable the Google Sheets API. 3. IAM & Admin → Service Accounts → create one → Keys → Add key → JSON. 4. Paste the downloaded file below. 5. Share your spreadsheet with the service account email, as Editor.',
+      },
+      {
+        name: 'serviceAccountJson',
+        label: 'Service account JSON key',
+        type: 'code',
+        language: 'json',
+        rows: 10,
+        required: true,
+        placeholder: '{\n  "type": "service_account",\n  "client_email": "...",\n  "private_key": "..."\n}',
+        description: 'Paste the whole downloaded file, including the outer braces.',
+      },
+      {
+        name: 'clientEmail',
+        label: 'Service account email (filled in automatically)',
+        type: 'string',
+        description: 'Share your spreadsheets with this address.',
+      },
+    ],
+  },
+  {
+    type: 'googleOAuth2',
+    displayName: 'Google (Sign in)',
+    description:
+      'Connects as a real Google account, so files you create belong to you. Needs an OAuth client from Google Cloud once, then it is a single click per account.',
+    icon: 'KeyRound',
+    previewFields: ['account', 'scope'],
+    properties: [
+      {
+        name: 'setup',
+        label: 'One-time setup',
+        type: 'notice',
+        description:
+          'In Google Cloud → APIs & Services → Credentials, create an OAuth client ID of type "Web application", and add this exact redirect URI: <APP_URL>/api/connections/oauth/google/callback',
+      },
+      { name: 'clientId', label: 'Client ID', type: 'string', required: true },
+      { name: 'clientSecret', label: 'Client secret', type: 'string', required: true },
+      {
+        name: 'refreshToken',
+        label: 'Refresh token',
+        type: 'string',
+        description:
+          'Filled in automatically after you save and click "Connect with Google". Leave blank.',
+      },
+      { name: 'account', label: 'Connected account', type: 'string' },
+    ],
+  },
+  {
     type: 'queryAuth',
     displayName: 'Query Parameter Auth',
     description: 'Appends a secret query parameter, e.g. ?api_key=...',

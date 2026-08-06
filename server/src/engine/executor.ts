@@ -6,20 +6,25 @@ import { logger } from '../lib/logger';
 import { Connection } from '../models/Connection';
 import { Run, runExpiryDate, type RunDoc } from '../models/Run';
 import { Workflow } from '../models/Workflow';
+import { handleRunFailure } from './errorHandler';
 import { resolveValue } from './expression';
+import {
+  createInitialState,
+  runGraph,
+  type GraphEdge,
+  type GraphNode,
+  type QueueItem,
+  type StepOutcome,
+  type TraversalState,
+} from './graph';
 import { getNodeDefinition, requireNodeDefinition } from './registry';
 import type {
   ExpressionScope,
   NodeExecutionContext,
-  NodeExecutionResult,
-  RunState,
   RunStepRecord,
   WorkflowEdge,
   WorkflowNode,
 } from './types';
-
-/** Safety net against a workflow that loops forever. */
-const MAX_STEPS_PER_RUN = 500;
 
 export interface WebhookResponsePayload {
   statusCode: number;
@@ -31,6 +36,7 @@ export interface WebhookResponsePayload {
 export interface ExecuteResult {
   status: 'success' | 'error' | 'waiting' | 'cancelled';
   error?: string;
+  errorNodeId?: string;
   resumeAt?: Date;
   lastOutput?: unknown;
   webhookResponse?: WebhookResponsePayload;
@@ -71,33 +77,6 @@ function makeConnectionResolver() {
   };
 }
 
-function buildScope(
-  state: RunState,
-  input: Record<string, unknown>,
-  trigger: Record<string, unknown>,
-  variables: Record<string, unknown>,
-  runId: string,
-  workflowId: string,
-  workflowName: string,
-): ExpressionScope {
-  const nodeScope: Record<string, { json: unknown }> = {};
-  for (const [name, id] of Object.entries(state.nodeNameToId)) {
-    nodeScope[name] = { json: state.nodeOutputs[id] ?? null };
-  }
-
-  return {
-    $json: input,
-    $trigger: trigger,
-    $node: nodeScope,
-    $vars: variables,
-    $runId: runId,
-    $workflowId: workflowId,
-    $workflowName: workflowName,
-    $now: new Date().toISOString(),
-    $timestamp: Date.now(),
-  };
-}
-
 /** Resolves node params, skipping properties flagged `resolveExpressions: false`. */
 function resolveParams(node: WorkflowNode, scope: ExpressionScope): Record<string, unknown> {
   const definition = getNodeDefinition(node.type);
@@ -114,15 +93,23 @@ function resolveParams(node: WorkflowNode, scope: ExpressionScope): Record<strin
   return resolved;
 }
 
-function downstream(edges: WorkflowEdge[], nodeId: string, handles: string[]): WorkflowEdge[] {
-  return edges.filter(
-    (edge) => edge.source === nodeId && handles.includes(edge.sourceHandle ?? 'main'),
-  );
+/** Maps workflow nodes onto the shape the pure traversal engine expects. */
+function toGraphNodes(nodes: WorkflowNode[]): GraphNode[] {
+  return nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    name: node.name,
+    inputs: getNodeDefinition(node.type)?.inputs ?? 1,
+    disabled: node.disabled,
+    onError: node.onError,
+  }));
 }
 
 /**
- * Executes (or resumes) a single run. Returns without throwing — the outcome is
- * always reported through ExecuteResult so the worker can update the job.
+ * Executes (or resumes) a single run.
+ *
+ * All graph walking lives in `graph.ts`; this function supplies the side effects —
+ * expression resolution, credentials, retries and persistence.
  */
 export async function executeRun(runId: string): Promise<ExecuteResult> {
   const run = await Run.findById(runId).select('+state');
@@ -130,16 +117,13 @@ export async function executeRun(runId: string): Promise<ExecuteResult> {
 
   const workflow = await Workflow.findById(run.workflow).lean();
   if (!workflow) {
-    run.status = 'error';
-    run.error = 'Workflow was deleted';
-    run.finishedAt = new Date();
-    await run.save();
+    await finishRun(run, 'error', 'Workflow was deleted');
     return { status: 'error', error: 'Workflow was deleted' };
   }
 
-  const nodes = (workflow.nodes ?? []) as unknown as WorkflowNode[];
-  const edges = (workflow.edges ?? []) as unknown as WorkflowEdge[];
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const workflowNodes = (workflow.nodes ?? []) as unknown as WorkflowNode[];
+  const workflowEdges = (workflow.edges ?? []) as unknown as WorkflowEdge[];
+  const nodeById = new Map(workflowNodes.map((node) => [node.id, node]));
 
   const controller = new AbortController();
   const timeoutMs = Number(workflow.settings?.timeoutMs ?? env.engine.runTimeoutMs);
@@ -149,115 +133,101 @@ export async function executeRun(runId: string): Promise<ExecuteResult> {
   const getConnection = makeConnectionResolver();
   const triggerPayload = asRecord(run.trigger?.payload ?? {});
   const variables = asRecord(workflow.variables ?? {});
+  const nodeNameToId = Object.fromEntries(workflowNodes.map((node) => [node.name, node.id]));
 
-  // Resume from saved state, or start fresh from the trigger node.
-  let state: RunState = (run.get('state') as RunState | undefined) ?? {
-    nodeOutputs: {},
-    nodeNameToId: Object.fromEntries(nodes.map((node) => [node.name, node.id])),
-    queue: [],
-    executed: [],
-  };
+  const savedState = run.get('state') as TraversalState | undefined;
+  /**
+   * runGraph mutates this object in place, so the execute callback below always
+   * sees the live node outputs when building expression scopes.
+   */
+  const currentState: TraversalState = savedState ?? createInitialState();
+  let webhookResponse: WebhookResponsePayload | undefined;
+  const logsByNode = new Map<string, string[]>();
+  const triesByNode = new Map<string, number>();
 
-  if (state.queue.length === 0 && state.executed.length === 0) {
-    const triggerNode = nodes.find((node) => node.id === run.trigger?.nodeId);
-    if (!triggerNode) {
-      clearTimeout(timer);
-      const error = 'Trigger node not found in this workflow';
-      await finishRun(run, 'error', error);
-      return { status: 'error', error };
+  run.set('status', 'running');
+  if (!run.startedAt) run.set('startedAt', new Date());
+
+  // A fresh run records the trigger itself as step zero.
+  if (!savedState) {
+    const triggerNode = nodeById.get(String(run.trigger?.nodeId ?? ''));
+    if (triggerNode) {
+      pushStep(run, {
+        nodeId: triggerNode.id,
+        nodeName: triggerNode.name,
+        nodeType: triggerNode.type,
+        status: 'success',
+        output: triggerPayload,
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        durationMs: 0,
+        tries: 1,
+      });
     }
-    state.nodeOutputs[triggerNode.id] = triggerPayload;
-    state.executed.push(triggerNode.id);
-    for (const edge of downstream(edges, triggerNode.id, ['main'])) {
-      state.queue.push({ nodeId: edge.target, input: triggerPayload });
-    }
-    run.steps.push({
-      nodeId: triggerNode.id,
-      nodeName: triggerNode.name,
-      nodeType: triggerNode.type,
-      status: 'success',
-      output: triggerPayload,
-      startedAt: new Date(),
-      finishedAt: new Date(),
-      durationMs: 0,
-      tries: 1,
-    } as RunStepRecord);
   }
-
-  run.status = 'running';
-  if (!run.startedAt) run.startedAt = new Date();
   await run.save();
 
-  let webhookResponse: WebhookResponsePayload | undefined;
-  let lastOutput: unknown = triggerPayload;
-  let stepCount = state.executed.length;
+  const buildScope = (
+    state: TraversalState,
+    input: Record<string, unknown>,
+    item: QueueItem,
+  ): ExpressionScope => {
+    const nodeScope: Record<string, { json: unknown }> = {};
+    for (const [name, id] of Object.entries(nodeNameToId)) {
+      const pinned = nodeById.get(id)?.pinnedData;
+      nodeScope[name] = { json: state.nodeOutputs[id] ?? pinned ?? null };
+    }
+    return {
+      $json: input,
+      $trigger: triggerPayload,
+      $node: nodeScope,
+      $vars: variables,
+      $runId: String(run._id),
+      $workflowId: String(workflow._id),
+      $workflowName: String(workflow.name),
+      $now: new Date().toISOString(),
+      $timestamp: Date.now(),
+      $itemIndex: item.loop?.index ?? 0,
+      $itemCount: item.loop?.total ?? 1,
+    };
+  };
 
-  try {
-    while (state.queue.length > 0) {
-      if (controller.signal.aborted || Date.now() > deadline) {
-        throw new Error(`Run exceeded the ${timeoutMs}ms time limit`);
-      }
-      if (++stepCount > MAX_STEPS_PER_RUN) {
-        throw new Error(
-          `Run exceeded ${MAX_STEPS_PER_RUN} steps — check for a loop in the workflow`,
-        );
-      }
+  const result = await runGraph({
+    nodes: toGraphNodes(workflowNodes),
+    edges: workflowEdges as GraphEdge[],
+    startNodeId: String(run.trigger?.nodeId ?? ''),
+    startData: triggerPayload,
+    state: currentState,
+    isCancelled: () => controller.signal.aborted || Date.now() > deadline,
+    cancelMessage: `Run exceeded the ${timeoutMs}ms time limit`,
 
-      const item = state.queue.shift();
-      if (!item) break;
-
-      const node = nodeById.get(item.nodeId);
-      if (!node) continue;
-
-      if (node.disabled) {
-        // Skip but keep the chain alive.
-        for (const edge of downstream(edges, node.id, ['main'])) {
-          state.queue.push({ nodeId: edge.target, input: item.input });
-        }
-        run.steps.push({
-          nodeId: node.id,
-          nodeName: node.name,
-          nodeType: node.type,
-          status: 'skipped',
-          startedAt: new Date(),
-          finishedAt: new Date(),
-          durationMs: 0,
-        } as RunStepRecord);
-        continue;
-      }
+    async execute(graphNode, item) {
+      const node = nodeById.get(graphNode.id);
+      if (!node) throw new Error('Step disappeared from the workflow mid-run');
 
       const definition = requireNodeDefinition(node.type);
       if (!definition.execute) {
-        throw new Error(`Node "${node.name}" (${node.type}) cannot be executed here`);
+        throw new Error(`"${node.name}" cannot run here — it is a trigger`);
       }
 
-      const scope = buildScope(
-        state,
-        item.input,
-        triggerPayload,
-        variables,
-        String(run._id),
-        String(workflow._id),
-        String(workflow.name),
-      );
-
       const logs: string[] = [];
-      const startedAt = new Date();
       const maxTries = node.retryOnFail ? Math.max(1, Number(node.maxTries ?? 3)) : 1;
-
-      let result: NodeExecutionResult | undefined;
-      let lastError: unknown;
       let tries = 0;
+      let lastError: unknown;
 
       while (tries < maxTries) {
         tries += 1;
         try {
-          const params = resolveParams(node, scope);
+          // The scope is rebuilt per attempt so {{ $now }} reflects the retry.
+          const scope = buildScope(currentState, item.input, item);
           const ctx: NodeExecutionContext = {
             node,
-            params,
+            params: resolveParams(node, scope),
             rawParams: node.params ?? {},
             input: item.input,
+            arrivals: item.arrivals,
+            itemIndex: item.loop?.index,
+            itemCount: item.loop?.total,
             scope,
             runId: String(run._id),
             workflowId: String(workflow._id),
@@ -266,159 +236,90 @@ export async function executeRun(runId: string): Promise<ExecuteResult> {
             log: (message) => logs.push(`${new Date().toISOString()}  ${message}`),
             signal: controller.signal,
           };
-          result = await definition.execute(ctx);
-          lastError = undefined;
-          break;
+
+          const outcome = await definition.execute(ctx);
+          logsByNode.set(node.id, logs);
+          triesByNode.set(node.id, tries);
+
+          if (outcome.kind === 'output') {
+            const response = (outcome.data as Record<string, unknown>).__webhookResponse;
+            if (response) webhookResponse = response as unknown as WebhookResponsePayload;
+          }
+          return outcome as StepOutcome;
         } catch (error) {
           lastError = error;
           if (tries < maxTries) {
+            logs.push(
+              `${new Date().toISOString()}  Attempt ${tries} failed: ${toErrorMessage(error)} — retrying`,
+            );
             await sleep(Number(node.waitBetweenTriesMs ?? 1000), controller.signal);
           }
         }
       }
 
-      const finishedAt = new Date();
-      const durationMs = finishedAt.getTime() - startedAt.getTime();
+      logsByNode.set(node.id, logs);
+      triesByNode.set(node.id, tries);
+      throw lastError ?? new Error('Step returned no result');
+    },
 
-      if (lastError || !result) {
-        const message = toErrorMessage(lastError ?? new Error('Node returned no result'));
-        run.steps.push({
-          nodeId: node.id,
-          nodeName: node.name,
-          nodeType: node.type,
-          status: 'error',
-          input: item.input,
-          error: message,
-          logs,
-          startedAt,
-          finishedAt,
-          durationMs,
-          tries,
-        } as RunStepRecord);
-
-        if (node.onError === 'continue') {
-          const errorPayload = { error: message, __failed: true, input: item.input };
-          state.nodeOutputs[node.id] = errorPayload;
-          state.executed.push(node.id);
-          for (const edge of downstream(edges, node.id, ['main'])) {
-            state.queue.push({ nodeId: edge.target, input: errorPayload });
-          }
-          await run.save();
-          continue;
-        }
-
-        throw new Error(`${node.name}: ${message}`);
-      }
-
-      if (result.kind === 'wait') {
-        // Persist and hand control back to the queue; resume after resumeAt.
-        state.queue.unshift(...downstreamQueue(edges, node.id, result.data));
-        state.nodeOutputs[node.id] = result.data;
-        state.executed.push(node.id);
-        run.steps.push({
-          nodeId: node.id,
-          nodeName: node.name,
-          nodeType: node.type,
-          status: 'waiting',
-          input: item.input,
-          output: { resumeAt: result.resumeAt },
-          logs,
-          startedAt,
-          finishedAt,
-          durationMs,
-          tries,
-        } as RunStepRecord);
-
-        const waitMs = result.resumeAt.getTime() - Date.now();
-        if (waitMs <= env.engine.inlineDelayMs) {
-          await sleep(Math.max(0, waitMs), controller.signal);
-          continue;
-        }
-
-        run.status = 'waiting';
-        run.set('state', state);
-        await run.save();
-        clearTimeout(timer);
-        return { status: 'waiting', resumeAt: result.resumeAt };
-      }
-
-      if (result.kind === 'stop') {
-        run.steps.push({
-          nodeId: node.id,
-          nodeName: node.name,
-          nodeType: node.type,
-          status: 'stopped',
-          input: item.input,
-          output: result.data,
-          error: result.reason,
-          logs,
-          startedAt,
-          finishedAt,
-          durationMs,
-          tries,
-        } as RunStepRecord);
-        state.executed.push(node.id);
-        await run.save();
-        continue;
-      }
-
-      // Normal output.
-      state.nodeOutputs[node.id] = result.data;
-      state.executed.push(node.id);
-      lastOutput = result.data;
-
-      const responseMeta = (result.data as Record<string, unknown>).__webhookResponse;
-      if (responseMeta) webhookResponse = responseMeta as unknown as WebhookResponsePayload;
-
-      run.steps.push({
-        nodeId: node.id,
-        nodeName: node.name,
-        nodeType: node.type,
-        status: 'success',
-        input: item.input,
-        output: result.data,
-        logs,
-        startedAt,
-        finishedAt,
-        durationMs,
-        tries,
+    async onStep(record) {
+      pushStep(run, {
+        ...record,
+        logs: logsByNode.get(record.nodeId) ?? [],
+        tries: triesByNode.get(record.nodeId) ?? 1,
       } as RunStepRecord);
+      // Persist incrementally so the UI can follow a long run live.
+      await run.save().catch((error) => {
+        logger.warn({ runId, err: toErrorMessage(error) }, 'Could not persist run progress');
+      });
+    },
+  });
 
-      const handles = result.outputs ?? ['main'];
-      for (const edge of downstream(edges, node.id, handles)) {
-        state.queue.push({ nodeId: edge.target, input: result.data });
-      }
+  clearTimeout(timer);
 
-      await run.save();
-    }
-
-    clearTimeout(timer);
-    await finishRun(run, 'success');
-    await bumpStats(String(workflow._id), true);
-    return { status: 'success', lastOutput, webhookResponse };
-  } catch (error) {
-    clearTimeout(timer);
-    const message = toErrorMessage(error);
-    logger.warn({ runId, err: message }, 'Run failed');
-    await finishRun(run, 'error', message);
-    await bumpStats(String(workflow._id), false);
-    return { status: 'error', error: message, webhookResponse };
+  if (result.status === 'waiting') {
+    run.set('status', 'waiting');
+    run.set('state', result.state);
+    await run.save();
+    return { status: 'waiting', resumeAt: result.resumeAt, webhookResponse };
   }
+
+  if (result.status === 'error') {
+    await finishRun(run, 'error', result.error);
+    await bumpStats(String(workflow._id), false);
+
+    // Fire and forget — alerting must never delay or fail the run itself.
+    void handleRunFailure({
+      workflowId: String(workflow._id),
+      workflowName: String(workflow.name),
+      runId: String(run._id),
+      error: result.error,
+      errorNodeId: result.nodeId,
+      mode: String(run.mode ?? 'manual'),
+    });
+
+    return {
+      status: 'error',
+      error: result.error,
+      errorNodeId: result.nodeId,
+      webhookResponse,
+    };
+  }
+
+  await finishRun(run, 'success');
+  await bumpStats(String(workflow._id), true);
+  return { status: 'success', lastOutput: result.lastOutput, webhookResponse };
 }
 
-function downstreamQueue(
-  edges: WorkflowEdge[],
-  nodeId: string,
-  data: Record<string, unknown>,
-): Array<{ nodeId: string; input: Record<string, unknown> }> {
-  return downstream(edges, nodeId, ['main']).map((edge) => ({ nodeId: edge.target, input: data }));
+/**
+ * Mongoose's DocumentArray typing does not accept our plain step objects, and
+ * casting at every call site is noisy — this keeps it in one place.
+ */
+function pushStep(run: RunDoc, step: RunStepRecord): void {
+  (run.steps as unknown as RunStepRecord[]).push(step);
 }
 
-async function finishRun(
-  run: RunDoc,
-  status: 'success' | 'error',
-  error?: string,
-): Promise<void> {
+async function finishRun(run: RunDoc, status: 'success' | 'error', error?: string): Promise<void> {
   const finishedAt = new Date();
   run.set('status', status);
   run.set('error', error);

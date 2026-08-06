@@ -17,6 +17,54 @@ function rowsToObject(rows: unknown): Record<string, string> {
   return out;
 }
 
+/**
+ * Turns an axios failure into a message that says what actually happened.
+ *
+ * This matters more than it looks. A timeout means *we* gave up waiting — the
+ * request may well have been delivered and acted upon. Reporting that as a flat
+ * "request failed" is how a workflow that successfully wrote a row ends up
+ * marked as an error, so the wording here is deliberately explicit.
+ */
+export function describeRequestFailure(
+  error: unknown,
+  method: string,
+  url: string,
+  elapsedMs: number,
+): Error {
+  const err = error as { code?: string; message?: string; name?: string };
+  const code = err?.code ?? '';
+  const seconds = Math.round(elapsedMs / 100) / 10;
+
+  if (code === 'ECONNABORTED' || code === 'ETIMEDOUT' || /timeout/i.test(err?.message ?? '')) {
+    return new Error(
+      `${method} ${url} — the server did not reply within ${seconds}s, so the step was marked failed. ` +
+        'The request may still have been received and processed. Raise "Timeout (ms)" on this step if the ' +
+        'target is simply slow, and prefer an idempotent request before enabling retries.',
+    );
+  }
+
+  if (err?.name === 'CanceledError' || code === 'ERR_CANCELED') {
+    return new Error(
+      `${method} ${url} — cancelled after ${seconds}s because the whole run hit its time limit. ` +
+        'Raise the workflow timeout in Workflow settings.',
+    );
+  }
+
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return new Error(`${method} ${url} — that hostname could not be resolved. Check the URL.`);
+  }
+  if (code === 'ECONNREFUSED') {
+    return new Error(`${method} ${url} — the connection was refused. Is the service reachable?`);
+  }
+  if (code === 'CERT_HAS_EXPIRED' || code?.startsWith('UNABLE_TO_VERIFY')) {
+    return new Error(
+      `${method} ${url} — the TLS certificate could not be verified. Turn on "Ignore SSL errors" only if you trust this host.`,
+    );
+  }
+
+  return new Error(`${method} ${url} — ${err?.message ?? String(error)}`);
+}
+
 export const httpRequest: NodeDefinition = {
   type: 'httpRequest',
   displayName: 'HTTP Request / Send Webhook',
@@ -93,7 +141,9 @@ export const httpRequest: NodeDefinition = {
       name: 'timeoutMs',
       label: 'Timeout (ms)',
       type: 'number',
-      default: 30000,
+      default: 120000,
+      description:
+        'How long to wait for a reply. Slow APIs (Google Sheets, Notion, large exports) can take well over 30 seconds — if you see "the server did not reply in time" errors on requests that actually worked, raise this.',
     },
     {
       name: 'ignoreSslErrors',
@@ -192,7 +242,12 @@ export const httpRequest: NodeDefinition = {
     }
 
     const started = Date.now();
-    const response = await axios.request(config);
+    let response;
+    try {
+      response = await axios.request(config);
+    } catch (error) {
+      throw describeRequestFailure(error, method, url, Date.now() - started);
+    }
     const durationMs = Date.now() - started;
 
     const ok = response.status >= 200 && response.status < 300;

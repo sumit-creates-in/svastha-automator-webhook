@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Plug, Plus, TestTube2, Trash2, XCircle } from 'lucide-react';
+import { CheckCircle2, LogIn, Plug, Plus, TestTube2, Trash2, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import Icon from '@/components/Icon';
 import PropertyRenderer from '@/components/editor/PropertyRenderer';
@@ -69,6 +69,34 @@ export default function Connections() {
       void queryClient.invalidateQueries({ queryKey: ['connections'] });
     },
     onError: (error) => toast.error(errorMessage(error, 'Could not save the connection')),
+  });
+
+  /**
+   * Opens Google's consent screen in a popup. The callback page closes itself,
+   * so we just poll for that and refresh once it's gone.
+   */
+  const connectGoogle = useMutation({
+    mutationFn: async (connectionId: string) => {
+      const { data } = await api.post<{ url: string }>(
+        `/connections/${connectionId}/oauth/google/start`,
+      );
+      return data.url;
+    },
+    onSuccess: (url) => {
+      const popup = window.open(url, 'svastha-google', 'width=520,height=680');
+      if (!popup) {
+        toast.error('Allow pop-ups for this site, then try again.');
+        return;
+      }
+      const timer = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(timer);
+          void queryClient.invalidateQueries({ queryKey: ['connections'] });
+          toast.success('Checked with Google — test the connection to confirm.');
+        }
+      }, 700);
+    },
+    onError: (error) => toast.error(errorMessage(error, 'Could not start the Google flow')),
   });
 
   const test = useMutation({
@@ -152,6 +180,25 @@ export default function Connections() {
                     <p className="mt-2 text-[11px] text-slate-400">
                       Tested {relativeTime(connection.lastTestedAt)}
                       {connection.lastTestError ? ` — ${connection.lastTestError}` : ''}
+                    </p>
+                  ) : null}
+
+                  {connection.type === 'googleOAuth2' ? (
+                    <button
+                      className="btn-secondary btn-sm mt-3 w-full justify-center"
+                      onClick={() => connectGoogle.mutate(connection._id)}
+                      disabled={connectGoogle.isPending}
+                    >
+                      {connectGoogle.isPending ? <Spinner /> : <LogIn className="h-3.5 w-3.5" />}
+                      {connection.preview?.scope ? 'Reconnect with Google' : 'Connect with Google'}
+                    </button>
+                  ) : null}
+
+                  {connection.type === 'googleServiceAccount' && connection.preview?.clientEmail ? (
+                    <p className="mt-3 rounded-lg bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-800 ring-1 ring-amber-200">
+                      Share each spreadsheet with{' '}
+                      <strong className="break-all">{String(connection.preview.clientEmail)}</strong>{' '}
+                      as an Editor, or Google will refuse.
                     </p>
                   ) : null}
 

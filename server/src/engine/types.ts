@@ -62,6 +62,12 @@ export interface NodeOutputDefinition {
   description?: string;
 }
 
+export interface NodeInputDefinition {
+  /** Handle id used by edges targeting this node. */
+  name: string;
+  label: string;
+}
+
 export interface NodeDefinition {
   /** Stable machine name, e.g. `httpRequest`. Never change it once released. */
   type: string;
@@ -72,8 +78,10 @@ export interface NodeDefinition {
   /** lucide-react icon name rendered by the frontend. */
   icon: string;
   color: string;
-  /** Triggers have no input handle. */
+  /** Triggers have no input handle. More than one makes the node a join point. */
   inputs: number;
+  /** Named input handles — required when `inputs > 1` so edges can address them. */
+  inputHandles?: NodeInputDefinition[];
   outputs: NodeOutputDefinition[];
   properties: NodeProperty[];
   /** Trigger-only: how the workflow is started. */
@@ -91,6 +99,11 @@ export interface WorkflowNode {
   params: Record<string, unknown>;
   disabled?: boolean;
   notes?: string;
+  /**
+   * Sample output pinned by the user. Lets downstream steps be configured and
+   * field lists be browsed without re-triggering the workflow.
+   */
+  pinnedData?: unknown;
   /** What to do when this node throws: stop the run, or continue with the error payload. */
   onError?: 'stop' | 'continue';
   /** Automatic retries for transient failures. */
@@ -122,6 +135,9 @@ export interface ExpressionScope {
   $workflowName: string;
   $now: string;
   $timestamp: number;
+  /** Position of the current item when running inside a Loop Over Items branch. */
+  $itemIndex: number;
+  $itemCount: number;
 }
 
 export interface NodeExecutionContext {
@@ -131,6 +147,11 @@ export interface NodeExecutionContext {
   /** Raw params, for nodes that need the un-resolved template (rare). */
   rawParams: Record<string, unknown>;
   input: Record<string, unknown>;
+  /** One entry per inbound branch — only populated for join nodes such as Merge. */
+  arrivals?: Array<{ handle: string; data: Record<string, unknown> }>;
+  /** Set when this execution is one iteration of a Loop Over Items branch. */
+  itemIndex?: number;
+  itemCount?: number;
   scope: ExpressionScope;
   runId: string;
   workflowId: string;
@@ -161,6 +182,13 @@ export type NodeExecutionResult =
       kind: 'wait';
       resumeAt: Date;
       data: Record<string, unknown>;
+    }
+  | {
+      /** Run the `handle` branch once per element, then fire `done` (used by Loop). */
+      kind: 'fanOut';
+      items: Array<Record<string, unknown>>;
+      handle: string;
+      doneData?: Record<string, unknown>;
     };
 
 export interface RunStepRecord {

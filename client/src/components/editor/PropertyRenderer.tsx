@@ -5,6 +5,24 @@ import { Field, Toggle } from '@/components/ui';
 import { api } from '@/lib/api';
 import type { Connection, NodeProperty } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { useFieldTarget } from '@/store/fieldTarget';
+
+/**
+ * Marks an input as the destination for the Available Fields panel.
+ *
+ * Spread onto every text-like control so clicking a field inserts it wherever
+ * the user was last typing. `onBlur` deliberately does NOT clear the target —
+ * clicking the panel blurs the input, and we still want that input.
+ */
+function useInsertTarget(label: string) {
+  const setTarget = useFieldTarget((state) => state.setTarget);
+  return {
+    onFocus: (event: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setTarget(event.currentTarget, label),
+    onClick: (event: React.MouseEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setTarget(event.currentTarget, label),
+  };
+}
 
 interface RendererProps {
   properties: NodeProperty[];
@@ -82,10 +100,13 @@ function ConnectionPicker({
 function KeyValueEditor({
   value,
   onChange,
+  label,
 }: {
   value: unknown;
   onChange: (value: unknown) => void;
+  label: string;
 }) {
+  const target = useInsertTarget(label);
   const rows = Array.isArray(value) ? (value as Array<{ key?: string; value?: string }>) : [];
 
   const update = (index: number, patch: Partial<{ key: string; value: string }>) => {
@@ -108,6 +129,7 @@ function KeyValueEditor({
             placeholder="value"
             value={row.value ?? ''}
             onChange={(event) => update(index, { value: event.target.value })}
+            {...target}
           />
           <button
             type="button"
@@ -140,6 +162,7 @@ function CollectionEditor({
   value: unknown;
   onChange: (value: unknown) => void;
 }) {
+  const target = useInsertTarget(property.label);
   const rows = Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
   const fields = property.fields ?? [];
 
@@ -182,6 +205,7 @@ function CollectionEditor({
                       placeholder={field.placeholder}
                       value={String(row[field.name] ?? '')}
                       onChange={(event) => update(index, field.name, event.target.value)}
+                      {...target}
                     />
                   )}
                 </div>
@@ -221,6 +245,7 @@ function SingleProperty({
 }) {
   const value = values[property.name] ?? property.default ?? '';
   const set = (next: unknown) => onChange(property.name, next);
+  const target = useInsertTarget(property.label);
 
   if (property.type === 'notice') {
     return (
@@ -270,6 +295,7 @@ function SingleProperty({
           value={String(value)}
           placeholder={property.placeholder}
           onChange={(event) => set(event.target.value)}
+          {...target}
         />
       ) : property.type === 'json' || property.type === 'code' ? (
         <textarea
@@ -279,9 +305,10 @@ function SingleProperty({
           value={String(value)}
           placeholder={property.placeholder}
           onChange={(event) => set(event.target.value)}
+          {...target}
         />
       ) : property.type === 'keyValue' ? (
-        <KeyValueEditor value={value} onChange={set} />
+        <KeyValueEditor value={value} onChange={set} label={property.label} />
       ) : property.type === 'collection' ? (
         <CollectionEditor property={property} value={value} onChange={set} />
       ) : property.type === 'connection' ? (
@@ -292,6 +319,7 @@ function SingleProperty({
           value={String(value)}
           placeholder={property.placeholder}
           onChange={(event) => set(event.target.value)}
+          {...target}
         />
       )}
     </Field>

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Copy, Download, MoreVertical, Plus, Search, Trash2, Upload, Workflow as WorkflowIcon } from 'lucide-react';
+import Icon from '@/components/Icon';
 import PageHeader from '@/components/PageHeader';
 import { EmptyState, Modal, Spinner, Toggle } from '@/components/ui';
 import { api, errorMessage } from '@/lib/api';
@@ -22,6 +23,40 @@ export default function Workflows() {
     queryFn: async () =>
       (await api.get<{ workflows: Workflow[] }>('/workflows', { params: { search } })).data
         .workflows,
+  });
+
+  const templates = useQuery({
+    queryKey: ['templates'],
+    staleTime: Infinity,
+    queryFn: async () =>
+      (
+        await api.get<{
+          templates: Array<{
+            id: string;
+            name: string;
+            description: string;
+            requires: string[];
+            icon: string;
+            stepCount: number;
+          }>;
+        }>('/workflows/meta/templates')
+      ).data.templates,
+  });
+
+  const fromTemplate = useMutation({
+    mutationFn: async (templateId: string) => {
+      const { data } = await api.post<{ workflow: Workflow }>(
+        `/workflows/from-template/${templateId}`,
+        newName.trim() ? { name: newName.trim() } : {},
+      );
+      return data.workflow;
+    },
+    onSuccess: (workflow) => {
+      setCreating(false);
+      setNewName('');
+      navigate(`/workflows/${workflow._id}`);
+    },
+    onError: (error) => toast.error(errorMessage(error, 'Could not create from that template')),
   });
 
   const create = useMutation({
@@ -269,7 +304,8 @@ export default function Workflows() {
         open={creating}
         onClose={() => setCreating(false)}
         title="New workflow"
-        description="You can rename it later."
+        description="Start from scratch, or from a working example you can edit."
+        wide
         footer={
           <>
             <button className="btn-secondary" onClick={() => setCreating(false)}>
@@ -281,7 +317,7 @@ export default function Workflows() {
               onClick={() => create.mutate(newName.trim())}
             >
               {create.isPending ? <Spinner /> : null}
-              Create and open
+              Create blank workflow
             </button>
           </>
         }
@@ -300,6 +336,49 @@ export default function Workflows() {
             if (event.key === 'Enter' && newName.trim()) create.mutate(newName.trim());
           }}
         />
+
+        <div className="mt-6">
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Or start from a template
+          </h3>
+          <p className="mb-3 text-xs text-slate-500">
+            Each one is a complete, editable workflow — fill in your connections and go.
+          </p>
+
+          <div className="space-y-2">
+            {(templates.data ?? []).map((template) => (
+              <button
+                key={template.id}
+                className="flex w-full items-start gap-3 rounded-lg border border-slate-200 p-3 text-left transition hover:border-brand-300 hover:bg-brand-50/40 disabled:opacity-60"
+                disabled={fromTemplate.isPending}
+                onClick={() => fromTemplate.mutate(template.id)}
+              >
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+                  <Icon name={template.icon} className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-slate-800">{template.name}</div>
+                  <div className="mt-0.5 text-xs leading-snug text-slate-500">
+                    {template.description}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    <span className="badge bg-slate-100 text-[10px] text-slate-600">
+                      {template.stepCount} steps
+                    </span>
+                    {template.requires.map((requirement) => (
+                      <span
+                        key={requirement}
+                        className="badge bg-amber-50 text-[10px] text-amber-700 ring-1 ring-amber-200"
+                      >
+                        needs {requirement.toLowerCase()}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
       </Modal>
     </div>
   );

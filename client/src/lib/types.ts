@@ -48,6 +48,11 @@ export interface NodeOutputDefinition {
   description?: string;
 }
 
+export interface NodeInputDefinition {
+  name: string;
+  label: string;
+}
+
 export interface NodeTypeDefinition {
   type: string;
   displayName: string;
@@ -57,6 +62,7 @@ export interface NodeTypeDefinition {
   icon: string;
   color: string;
   inputs: number;
+  inputHandles?: NodeInputDefinition[];
   outputs: NodeOutputDefinition[];
   properties: NodeProperty[];
   triggerKind?: 'webhook' | 'schedule' | 'manual';
@@ -87,6 +93,7 @@ export interface WorkflowNodeData {
   params: Record<string, unknown>;
   disabled?: boolean;
   notes?: string;
+  pinnedData?: unknown;
   onError?: 'stop' | 'continue';
   retryOnFail?: boolean;
   maxTries?: number;
@@ -98,6 +105,8 @@ export interface WorkflowEdgeData {
   source: string;
   target: string;
   sourceHandle?: string;
+  /** Must be persisted, or edges into named inputs are lost on reload. */
+  targetHandle?: string;
 }
 
 export interface WorkflowStats {
@@ -125,6 +134,16 @@ export interface Workflow {
     saveSuccessfulRunData: boolean;
     saveFailedRunData: boolean;
     timeoutMs: number;
+    captureSampleData?: boolean;
+    errorWorkflow?: string | null;
+    errorEmailTo?: string;
+    errorEmailConnection?: string | null;
+  };
+  sampleData?: {
+    payload?: unknown;
+    nodeId?: string;
+    capturedAt?: string;
+    mode?: string;
   };
   stats: WorkflowStats;
   createdAt: string;

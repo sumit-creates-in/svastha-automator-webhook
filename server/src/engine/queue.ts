@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { Job, type JobDoc } from '../models/Job';
 import { Run } from '../models/Run';
 import { Workflow, type WorkflowDoc } from '../models/Workflow';
+import { summariseForSample } from './fields';
 import type { WorkflowNode } from './types';
 
 export interface EnqueueOptions {
@@ -23,6 +24,28 @@ export interface EnqueueResult {
 
 /** Creates a Run + Job pair. The worker picks it up on its next poll. */
 export async function enqueueRun(options: EnqueueOptions): Promise<EnqueueResult> {
+  // Remember what the trigger sent so the editor can offer real field names.
+  // Done here rather than at the end of the run so the payload is captured even
+  // if the workflow goes on to fail — which is exactly when you need to inspect it.
+  if (
+    options.mode !== 'manual' ||
+    Object.keys(options.payload ?? {}).length > 0
+  ) {
+    await Workflow.updateOne(
+      { _id: options.workflow._id, 'settings.captureSampleData': { $ne: false } },
+      {
+        $set: {
+          sampleData: {
+            payload: summariseForSample(options.payload),
+            nodeId: options.triggerNode.id,
+            capturedAt: new Date(),
+            mode: options.mode,
+          },
+        },
+      },
+    ).catch(() => undefined);
+  }
+
   const run = await Run.create({
     workflow: options.workflow._id,
     workflowName: options.workflow.name,

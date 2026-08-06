@@ -37,6 +37,8 @@ function makeCtx(params: Record<string, unknown>, input: Record<string, unknown>
     $workflowName: 'wf',
     $now: new Date().toISOString(),
     $timestamp: Date.now(),
+    $itemIndex: 0,
+    $itemCount: 1,
   };
   return {
     node: { id: 'n', type: 'httpRequest', name: 'HTTP', position: { x: 0, y: 0 }, params },

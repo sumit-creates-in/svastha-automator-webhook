@@ -11,6 +11,9 @@ import filter from './nodes/filter';
 import delay from './nodes/delay';
 import code from './nodes/code';
 import respondToWebhook from './nodes/respondToWebhook';
+import googleSheets from './nodes/googleSheets';
+import loopItems from './nodes/loopItems';
+import merge from './nodes/merge';
 
 /**
  * The node catalogue.
@@ -28,6 +31,7 @@ const definitions: NodeDefinition[] = [
   // Actions
   httpRequest,
   sendEmail,
+  googleSheets,
   respondToWebhook,
   // Data
   transform,
@@ -36,6 +40,8 @@ const definitions: NodeDefinition[] = [
   ifCondition,
   filter,
   delay,
+  loopItems,
+  merge,
 ];
 
 const registry = new Map<string, NodeDefinition>(definitions.map((d) => [d.type, d]));
