@@ -27,6 +27,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import AvailableFields from '@/components/editor/AvailableFields';
 import FlowNode, { type FlowNodeData } from '@/components/editor/FlowNode';
 import NodeConfigPanel from '@/components/editor/NodeConfigPanel';
 import NodePalette from '@/components/editor/NodePalette';
@@ -34,6 +35,7 @@ import { JsonViewer, Modal, Spinner, StatusBadge, Toggle } from '@/components/ui
 import { findDefinition, useCatalogue } from '@/hooks/useCatalogue';
 import { api, errorMessage } from '@/lib/api';
 import type {
+  Connection,
   Run,
   ValidationIssue,
   Workflow,
@@ -62,9 +64,14 @@ function EditorInner() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
+  const [errorEmailTo, setErrorEmailTo] = useState('');
+  const [errorEmailConnection, setErrorEmailConnection] = useState('');
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
+  const [pinning, setPinning] = useState<{ nodeId: string; name: string; json: string } | null>(
+    null,
+  );
   const loadedRef = useRef(false);
 
   const workflowQuery = useQuery({
@@ -85,6 +92,8 @@ function EditorInner() {
     setActive(workflow.active);
     setMeta(workflow.nodes ?? []);
     setIssues(workflowQuery.data.issues ?? []);
+    setErrorEmailTo(workflow.settings?.errorEmailTo ?? '');
+    setErrorEmailConnection(workflow.settings?.errorEmailConnection ?? '');
 
     setNodes(
       (workflow.nodes ?? []).map((node) => ({
@@ -100,6 +109,10 @@ function EditorInner() {
         source: edge.source,
         target: edge.target,
         sourceHandle: edge.sourceHandle ?? 'main',
+        // `main` is our stored default for single-input steps, whose handle is
+        // unnamed on the canvas — map it back to null so React Flow re-attaches.
+        targetHandle:
+          !edge.targetHandle || edge.targetHandle === 'main' ? null : edge.targetHandle,
         animated: true,
         type: 'smoothstep',
       })),
@@ -134,6 +147,12 @@ function EditorInner() {
       }),
     );
   }, [meta, issues, definitionsByType, setNodes]);
+
+  const connections = useQuery({
+    queryKey: ['connections'],
+    queryFn: async () =>
+      (await api.get<{ connections: Connection[] }>('/connections')).data.connections,
+  });
 
   const runQuery = useQuery({
     queryKey: ['run', activeRunId],
@@ -179,6 +198,7 @@ function EditorInner() {
             animated: true,
             type: 'smoothstep',
             sourceHandle: connection.sourceHandle ?? 'main',
+            targetHandle: connection.targetHandle ?? null,
           },
           current,
         ),
@@ -278,6 +298,7 @@ function EditorInner() {
       source: edge.source,
       target: edge.target,
       sourceHandle: edge.sourceHandle ?? 'main',
+      targetHandle: edge.targetHandle ?? 'main',
     }));
     return {
       name,
@@ -286,10 +307,24 @@ function EditorInner() {
       nodes: nodePayload,
       edges: edgePayload,
       variables: workflowQuery.data?.workflow.variables ?? {},
-      settings: workflowQuery.data?.workflow.settings,
+      settings: {
+        ...workflowQuery.data?.workflow.settings,
+        errorEmailTo,
+        errorEmailConnection: errorEmailConnection || null,
+      },
       tags: workflowQuery.data?.workflow.tags ?? [],
     };
-  }, [nodes, edges, meta, name, description, active, workflowQuery.data]);
+  }, [
+    nodes,
+    edges,
+    meta,
+    name,
+    description,
+    active,
+    workflowQuery.data,
+    errorEmailTo,
+    errorEmailConnection,
+  ]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -324,6 +359,94 @@ function EditorInner() {
       void queryClient.invalidateQueries({ queryKey: ['workflows'] });
     },
     onError: (error) => toast.error(errorMessage(error, 'Could not change the status')),
+  });
+
+  /** The step immediately upstream — whose output this step will receive. */
+  const previousNodeId = useCallback(
+    (nodeId: string) => edges.find((edge) => edge.target === nodeId)?.source,
+    [edges],
+  );
+
+  const openPinDialog = useCallback(
+    (nodeId: string) => {
+      const target = meta.find((entry) => entry.id === nodeId);
+      setPinning({
+        nodeId,
+        name: target?.name ?? 'this step',
+        json: target?.pinnedData ? JSON.stringify(target.pinnedData, null, 2) : '',
+      });
+    },
+    [meta],
+  );
+
+  const duplicateNode = useCallback(
+    (nodeId: string) => {
+      const source = meta.find((entry) => entry.id === nodeId);
+      const visual = nodes.find((entry) => entry.id === nodeId);
+      if (!source || !visual) return;
+
+      const newId = uid('node');
+      const copy: WorkflowNodeData = {
+        ...structuredClone(source),
+        id: newId,
+        name: uniqueName(source.name, meta.map((entry) => entry.name)),
+        position: { x: visual.position.x + 40, y: visual.position.y + 120 },
+      };
+
+      setMeta((current) => [...current, copy]);
+      setNodes((current) => [
+        ...current,
+        {
+          id: newId,
+          type: 'svastha',
+          position: copy.position,
+          data: { label: copy.name, definition: definitionsByType.get(nodeId) } as FlowNodeData,
+        },
+      ]);
+      setSelectedId(newId);
+      markDirty();
+      toast.success(`Duplicated "${source.name}"`);
+    },
+    [meta, nodes, definitionsByType, setNodes, markDirty],
+  );
+
+  const pinData = useMutation({
+    mutationFn: async ({ nodeId, json }: { nodeId: string; json: string }) => {
+      // Persist locally too, so the value survives the next Save.
+      await api.patch(`/workflows/${id}/nodes/${nodeId}/pin`, { data: json });
+      return { nodeId, json };
+    },
+    onSuccess: ({ nodeId, json }) => {
+      setMeta((current) =>
+        current.map((entry) =>
+          entry.id === nodeId
+            ? { ...entry, pinnedData: json.trim() ? JSON.parse(json) : undefined }
+            : entry,
+        ),
+      );
+      setPinning(null);
+      void queryClient.invalidateQueries({ queryKey: ['fields', id] });
+      toast.success(json.trim() ? 'Sample data pinned' : 'Pinned data cleared');
+    },
+    onError: (error) => toast.error(errorMessage(error, 'Could not pin that data')),
+  });
+
+  const runFromHere = useMutation({
+    mutationFn: async (nodeId: string) => {
+      if (dirty) await api.put(`/workflows/${id}`, buildPayload());
+      const { data } = await api.post<{ runId: string; startedFrom: string }>(
+        `/workflows/${id}/run`,
+        { startFromNodeId: nodeId },
+      );
+      return data;
+    },
+    onSuccess: (data) => {
+      setDirty(false);
+      setActiveRunId(data.runId);
+      setRunPanelOpen(true);
+      toast.success(`Running from "${data.startedFrom}"`);
+    },
+    onError: (error) => toast.error(errorMessage(error, 'Could not start from that step')),
   });
 
   const testRun = useMutation({
@@ -513,15 +636,34 @@ function EditorInner() {
         />
 
         {selectedMeta && !paletteOpen ? (
-          <NodeConfigPanel
-            node={selectedMeta}
-            definition={definitionsByType.get(selectedMeta.id)}
-            catalogue={catalogue.data}
-            webhookUrl={webhookUrls[selectedMeta.id]}
-            onChange={(patch) => updateNodeMeta(selectedMeta.id, patch)}
-            onDelete={() => deleteNode(selectedMeta.id)}
-            onClose={() => setSelectedId(null)}
-          />
+          <>
+            {/* Triggers have nothing upstream, so there is nothing to reference. */}
+            {definitionsByType.get(selectedMeta.id)?.group !== 'trigger' && id ? (
+              <AvailableFields
+                workflowId={id}
+                nodeId={selectedMeta.id}
+                onTestRun={() => testRun.mutate()}
+                onPinData={() => openPinDialog(previousNodeId(selectedMeta.id) ?? selectedMeta.id)}
+              />
+            ) : null}
+
+            <NodeConfigPanel
+              node={selectedMeta}
+              definition={definitionsByType.get(selectedMeta.id)}
+              catalogue={catalogue.data}
+              webhookUrl={webhookUrls[selectedMeta.id]}
+              onChange={(patch) => updateNodeMeta(selectedMeta.id, patch)}
+              onDelete={() => deleteNode(selectedMeta.id)}
+              onClose={() => setSelectedId(null)}
+              onDuplicate={() => duplicateNode(selectedMeta.id)}
+              onPinData={() => openPinDialog(selectedMeta.id)}
+              onRunFromHere={
+                definitionsByType.get(selectedMeta.id)?.group === 'trigger'
+                  ? undefined
+                  : () => runFromHere.mutate(selectedMeta.id)
+              }
+            />
+          </>
         ) : null}
       </div>
 
@@ -642,10 +784,89 @@ function EditorInner() {
           placeholder="What does this automation do?"
         />
 
+        <label className="label">When a run fails</label>
+        <div className="mb-4 grid gap-3">
+          <input
+            className="input"
+            placeholder="Email these addresses on failure (comma separated)"
+            value={errorEmailTo}
+            onChange={(event) => {
+              setErrorEmailTo(event.target.value);
+              markDirty();
+            }}
+          />
+          <p className="text-xs text-slate-500">
+            Alerts use the SMTP connection selected below. Leave the addresses blank to turn
+            alerting off.
+          </p>
+          <select
+            className="input"
+            value={errorEmailConnection}
+            onChange={(event) => {
+              setErrorEmailConnection(event.target.value);
+              markDirty();
+            }}
+          >
+            <option value="">— no connection selected —</option>
+            {(connections.data ?? [])
+              .filter((connection) => connection.type === 'smtp')
+              .map((connection) => (
+                <option key={connection._id} value={connection._id}>
+                  {connection.name}
+                </option>
+              ))}
+          </select>
+        </div>
+
         <div className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
           <p className="mb-1 font-semibold text-slate-700">Shortcuts</p>
           <p>Ctrl/Cmd + S — save · Delete — remove selected step · Drag from a dot to connect steps</p>
         </div>
+      </Modal>
+
+      <Modal
+        open={Boolean(pinning)}
+        onClose={() => setPinning(null)}
+        title={`Pin sample data for "${pinning?.name ?? ''}"`}
+        description="Paste an example of what this step produces. Later steps can then be configured — and their fields browsed — without running anything."
+        wide
+        footer={
+          <>
+            {pinning?.json ? (
+              <button
+                className="btn-ghost mr-auto text-rose-600"
+                onClick={() => pinData.mutate({ nodeId: pinning.nodeId, json: '' })}
+              >
+                Clear pinned data
+              </button>
+            ) : null}
+            <button className="btn-secondary" onClick={() => setPinning(null)}>
+              Cancel
+            </button>
+            <button
+              className="btn-primary"
+              disabled={pinData.isPending}
+              onClick={() => pinning && pinData.mutate({ nodeId: pinning.nodeId, json: pinning.json })}
+            >
+              {pinData.isPending ? <Spinner /> : null}
+              Pin data
+            </button>
+          </>
+        }
+      >
+        <textarea
+          className="code-area"
+          rows={14}
+          spellCheck={false}
+          placeholder={'{\n  "body": {\n    "first_name": "Sumit",\n    "email": "sumit@example.com"\n  }\n}'}
+          value={pinning?.json ?? ''}
+          onChange={(event) =>
+            setPinning((current) => (current ? { ...current, json: event.target.value } : current))
+          }
+        />
+        <p className="mt-2 text-xs text-slate-500">
+          Must be valid JSON. Tip: copy the Input or Output panel from any previous run.
+        </p>
       </Modal>
     </div>
   );

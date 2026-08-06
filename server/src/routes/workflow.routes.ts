@@ -2,8 +2,15 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { env } from '../config/env';
+import {
+  buildFieldGroup,
+  nodeRootExpression,
+  summariseForSample,
+  type FieldGroup,
+} from '../engine/fields';
 import { getNodeDefinition, listNodeDefinitions } from '../engine/registry';
 import { enqueueRun } from '../engine/queue';
+import { getTemplate, workflowTemplates } from '../engine/templates';
 import { removeWorkflowSchedules, syncWorkflowSchedules } from '../engine/scheduler';
 import type { WorkflowNode } from '../engine/types';
 import { AppError, asyncHandler } from '../lib/errors';
@@ -23,6 +30,7 @@ const nodeSchema = z.object({
   params: z.record(z.unknown()).default({}),
   disabled: z.boolean().optional(),
   notes: z.string().optional(),
+  pinnedData: z.unknown().optional(),
   onError: z.enum(['stop', 'continue']).optional(),
   retryOnFail: z.boolean().optional(),
   maxTries: z.number().int().min(1).max(10).optional(),
@@ -34,6 +42,7 @@ const edgeSchema = z.object({
   source: z.string().min(1),
   target: z.string().min(1),
   sourceHandle: z.string().optional().default('main'),
+  targetHandle: z.string().optional().default('main'),
 });
 
 const workflowSchema = z.object({
@@ -50,9 +59,56 @@ const workflowSchema = z.object({
       saveSuccessfulRunData: z.boolean().optional(),
       saveFailedRunData: z.boolean().optional(),
       timeoutMs: z.number().int().min(1000).max(30 * 60 * 1000).optional(),
+      captureSampleData: z.boolean().optional(),
+      errorWorkflow: z.string().nullish(),
+      errorEmailTo: z.string().optional(),
+      errorEmailConnection: z.string().nullish(),
     })
     .optional(),
 });
+
+/**
+ * Every step that can reach `nodeId`, plus the one immediately before it.
+ *
+ * The direct parent matters because that is the only step addressable as
+ * `$json` — everything earlier needs `$node["Name"].json`.
+ */
+export function collectAncestors(
+  nodeId: string,
+  edges: Array<{ source: string; target: string }>,
+): { all: string[]; direct?: string } {
+  const parentsOf = (id: string) =>
+    edges.filter((edge) => edge.target === id).map((edge) => edge.source);
+
+  const direct = parentsOf(nodeId)[0];
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const stack = [...parentsOf(nodeId)];
+
+  while (stack.length > 0) {
+    const current = stack.shift() as string;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    ordered.push(current);
+    stack.push(...parentsOf(current));
+  }
+
+  // Nearest first, so the most relevant fields appear at the top of the panel.
+  return { all: ordered, direct };
+}
+
+/** The output a step produced the last time it ran successfully. */
+async function lastRecordedOutput(
+  workflowId: string,
+  nodeId?: string,
+): Promise<unknown | undefined> {
+  if (!nodeId) return undefined;
+  const run = await Run.findOne({ workflow: workflowId, 'steps.nodeId': nodeId })
+    .sort({ createdAt: -1 })
+    .lean();
+  return run?.steps?.filter((step) => step.nodeId === nodeId && step.status === 'success').at(-1)
+    ?.output;
+}
 
 export interface ValidationIssue {
   level: 'error' | 'warning';
@@ -260,6 +316,34 @@ router.post(
 
     if (!triggerNode) throw AppError.badRequest('This workflow has no trigger to start from');
 
+    // "Run from here": start mid-graph using pinned data or the captured payload,
+    // so you can iterate on step 5 without replaying steps 1–4.
+    if (req.body?.startFromNodeId) {
+      const startNode = nodes.find((node) => node.id === req.body.startFromNodeId);
+      if (!startNode) throw AppError.badRequest('That step is no longer in the workflow');
+
+      const upstream = collectAncestors(startNode.id, workflow.edges as never).direct;
+      const upstreamNode = nodes.find((node) => node.id === upstream);
+
+      const seed =
+        req.body?.payload ??
+        upstreamNode?.pinnedData ??
+        (await lastRecordedOutput(String(workflow._id), upstream)) ??
+        workflow.sampleData?.payload ??
+        {};
+
+      const { runId } = await enqueueRun({
+        workflow,
+        triggerNode: startNode,
+        payload: seed as Record<string, unknown>,
+        mode: 'test',
+        startedBy: req.user!.id,
+      });
+
+      res.status(202).json({ runId, startedFrom: startNode.name });
+      return;
+    }
+
     let payload: Record<string, unknown> = req.body?.payload ?? {};
     if (!req.body?.payload && triggerNode.type === 'manualTrigger') {
       const sample = (triggerNode.params as Record<string, unknown>)?.sampleData;
@@ -283,6 +367,148 @@ router.post(
     });
 
     res.status(202).json({ runId });
+  }),
+);
+
+/**
+ * Fields available to a given step.
+ *
+ * Walks backwards from the step to find everything that could legitimately feed
+ * it: the captured trigger payload, any pinned samples, and the recorded output
+ * of each upstream step from the most recent run. Each entry carries the exact
+ * expression needed to reference it.
+ */
+router.get(
+  '/:id/fields',
+  asyncHandler(async (req, res) => {
+    const workflow = await Workflow.findById(req.params.id).lean();
+    if (!workflow) throw AppError.notFound('Workflow not found');
+
+    const nodes = (workflow.nodes ?? []) as unknown as WorkflowNode[];
+    const edges = (workflow.edges ?? []) as unknown as Array<{ source: string; target: string }>;
+    const nodeId = String(req.query.nodeId ?? '');
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+    const ancestors = collectAncestors(nodeId, edges);
+    const groups: FieldGroup[] = [];
+
+    // 1. The trigger payload — the thing people reference most.
+    const triggerNode =
+      nodes.find((node) => node.id === workflow.sampleData?.nodeId) ??
+      nodes.find((node) => getNodeDefinition(node.type)?.group === 'trigger');
+
+    const pinnedTrigger = triggerNode?.pinnedData;
+    const capturedTrigger = workflow.sampleData?.payload;
+    const triggerSample = pinnedTrigger ?? capturedTrigger;
+
+    if (triggerNode) {
+      const isDirectParent = ancestors.direct === triggerNode.id;
+      groups.push(
+        buildFieldGroup({
+          key: 'trigger',
+          label: triggerNode.name,
+          description:
+            getNodeDefinition(triggerNode.type)?.displayName ?? 'Trigger',
+          // If the trigger feeds this step directly, $json is the natural form.
+          root: isDirectParent ? '$json' : '$trigger',
+          value: triggerSample,
+          source: pinnedTrigger ? 'pinned' : capturedTrigger ? 'run' : 'none',
+          capturedAt: workflow.sampleData?.capturedAt ?? undefined,
+        }),
+      );
+
+      // $trigger always works, so offer it too when the trigger is further back.
+      if (isDirectParent && triggerSample) {
+        groups.push(
+          buildFieldGroup({
+            key: 'trigger-absolute',
+            label: `${triggerNode.name} (via $trigger)`,
+            description: 'Works from anywhere in the workflow',
+            root: '$trigger',
+            value: triggerSample,
+            source: pinnedTrigger ? 'pinned' : 'run',
+            capturedAt: workflow.sampleData?.capturedAt ?? undefined,
+          }),
+        );
+      }
+    }
+
+    // 2. Outputs of upstream steps, taken from the latest run that reached them.
+    const latestRun = await Run.findOne({
+      workflow: workflow._id,
+      'steps.0': { $exists: true },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    for (const ancestorId of ancestors.all) {
+      const node = nodeById.get(ancestorId);
+      if (!node || node.id === triggerNode?.id) continue;
+
+      const recorded = latestRun?.steps
+        ?.filter((step) => step.nodeId === node.id && step.status === 'success')
+        .at(-1)?.output;
+
+      const value = node.pinnedData ?? recorded;
+      if (value === undefined || value === null) continue;
+
+      groups.push(
+        buildFieldGroup({
+          key: node.id,
+          label: node.name,
+          description: getNodeDefinition(node.type)?.displayName,
+          root:
+            ancestors.direct === node.id ? '$json' : nodeRootExpression(node.name),
+          value,
+          source: node.pinnedData ? 'pinned' : 'run',
+          capturedAt: latestRun?.createdAt as Date | undefined,
+        }),
+      );
+    }
+
+    res.json({
+      groups: groups.filter((group) => group.fields.length > 0 || group.key === 'trigger'),
+      hasSample: groups.some((group) => group.fields.length > 0),
+      helpers: [
+        { expression: '{{ $now }}', description: 'Current date and time' },
+        { expression: '{{ $runId }}', description: 'Id of this run' },
+        { expression: '{{ $workflowName }}', description: 'Name of this workflow' },
+        { expression: '{{ $itemIndex }}', description: 'Position inside a Loop branch' },
+      ],
+    });
+  }),
+);
+
+/** Saves or clears the pinned sample output for one step. */
+router.patch(
+  '/:id/nodes/:nodeId/pin',
+  asyncHandler(async (req, res) => {
+    const workflow = await Workflow.findById(req.params.id);
+    if (!workflow) throw AppError.notFound('Workflow not found');
+
+    const nodes = workflow.nodes as unknown as WorkflowNode[];
+    const node = nodes.find((entry) => entry.id === req.params.nodeId);
+    if (!node) throw AppError.notFound('Step not found');
+
+    const { data } = req.body ?? {};
+    let parsed: unknown = data;
+    if (typeof data === 'string') {
+      if (data.trim() === '') {
+        parsed = undefined;
+      } else {
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          throw AppError.badRequest('That is not valid JSON. Paste an object such as { "email": "a@b.com" }.');
+        }
+      }
+    }
+
+    node.pinnedData = parsed === undefined ? undefined : summariseForSample(parsed);
+    workflow.markModified('nodes');
+    await workflow.save();
+
+    res.json({ ok: true, pinned: node.pinnedData !== undefined });
   }),
 );
 
@@ -353,5 +579,41 @@ router.post(
 router.get('/meta/node-types', (_req, res) => {
   res.json({ nodes: listNodeDefinitions() });
 });
+
+/** Starter templates shown when creating a workflow. */
+router.get('/meta/templates', (_req, res) => {
+  res.json({
+    templates: workflowTemplates.map(({ nodes, edges, ...rest }) => ({
+      ...rest,
+      stepCount: nodes.length,
+    })),
+  });
+});
+
+/** Creates a workflow from a template. */
+router.post(
+  '/from-template/:templateId',
+  asyncHandler(async (req, res) => {
+    const template = getTemplate(req.params.templateId);
+    if (!template) throw AppError.notFound('Template not found');
+
+    const workflow = await Workflow.create({
+      name: String(req.body?.name || template.name),
+      description: template.description,
+      nodes: template.nodes,
+      edges: template.edges.map((edge) => ({
+        sourceHandle: 'main',
+        targetHandle: 'main',
+        ...edge,
+      })),
+      active: false,
+      webhookId: nanoid(22),
+      createdBy: req.user!.id,
+      updatedBy: req.user!.id,
+    });
+
+    res.status(201).json({ workflow: withWebhookUrls(workflow) });
+  }),
+);
 
 export default router;

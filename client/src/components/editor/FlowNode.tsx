@@ -31,8 +31,25 @@ function FlowNodeComponent({ data, selected }: NodeProps) {
         isTrigger && 'rounded-l-[28px]',
       )}
     >
-      {definition && definition.inputs > 0 ? (
-        <Handle type="target" position={Position.Left} id="in" />
+      {/*
+        Single-input steps use the DEFAULT (unnamed) handle on purpose. Naming it
+        forces every edge to carry a matching targetHandle, and any edge saved
+        without one silently fails to re-attach on reload — which looked like
+        "only one action runs". Join nodes below do need names, and those are
+        persisted.
+      */}
+      {definition && definition.inputs === 1 ? (
+        <Handle type="target" position={Position.Left} />
+      ) : null}
+
+      {definition && definition.inputs > 1 ? (
+        <div className="absolute left-0 top-0 flex h-full flex-col justify-evenly">
+          {(definition.inputHandles ?? []).map((input) => (
+            <div key={input.name} className="relative h-0">
+              <Handle type="target" position={Position.Left} id={input.name} />
+            </div>
+          ))}
+        </div>
       ) : null}
 
       <div className="flex items-center gap-2.5 px-3 py-2.5">

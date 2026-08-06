@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Copy, Info, Settings2, Trash2, X } from 'lucide-react';
+import { Check, Copy, CopyPlus, Info, Pin, PlayCircle, Settings2, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import Icon from '@/components/Icon';
 import PropertyRenderer from '@/components/editor/PropertyRenderer';
@@ -15,6 +15,9 @@ interface Props {
   onChange: (patch: Partial<WorkflowNodeData>) => void;
   onDelete: () => void;
   onClose: () => void;
+  onDuplicate?: () => void;
+  onRunFromHere?: () => void;
+  onPinData?: () => void;
 }
 
 export default function NodeConfigPanel({
@@ -25,6 +28,9 @@ export default function NodeConfigPanel({
   onChange,
   onDelete,
   onClose,
+  onDuplicate,
+  onRunFromHere,
+  onPinData,
 }: Props) {
   const [tab, setTab] = useState<'settings' | 'advanced' | 'help'>('settings');
   const [copied, setCopied] = useState(false);
@@ -64,6 +70,35 @@ export default function NodeConfigPanel({
         <button className="btn-ghost p-1.5" onClick={onClose} aria-label="Close">
           <X className="h-4 w-4" />
         </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
+        {onRunFromHere ? (
+          <button
+            className="btn-ghost btn-sm"
+            onClick={onRunFromHere}
+            title="Run the workflow starting at this step, using the previous step's saved output"
+          >
+            <PlayCircle className="h-3.5 w-3.5" />
+            Run from here
+          </button>
+        ) : null}
+        {onPinData ? (
+          <button
+            className="btn-ghost btn-sm"
+            onClick={onPinData}
+            title="Paste a sample output so later steps can be built without running anything"
+          >
+            <Pin className={cn('h-3.5 w-3.5', node.pinnedData ? 'text-amber-500' : '')} />
+            {node.pinnedData ? 'Pinned' : 'Pin data'}
+          </button>
+        ) : null}
+        {onDuplicate ? (
+          <button className="btn-ghost btn-sm" onClick={onDuplicate} title="Duplicate this step">
+            <CopyPlus className="h-3.5 w-3.5" />
+            Duplicate
+          </button>
+        ) : null}
       </div>
 
       <div className="flex gap-1 border-b border-slate-200 px-3 pt-2">

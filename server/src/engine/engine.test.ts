@@ -27,6 +27,8 @@ function makeScope(json: Record<string, unknown>): ExpressionScope {
     $workflowName: 'Test workflow',
     $now: new Date('2026-08-05T10:00:00Z').toISOString(),
     $timestamp: Date.parse('2026-08-05T10:00:00Z'),
+    $itemIndex: 0,
+    $itemCount: 1,
   };
 }
 

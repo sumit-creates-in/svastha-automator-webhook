@@ -22,12 +22,23 @@ Built with **MongoDB, Express, React and Node.js — all in TypeScript**. It dep
 | --- | --- |
 | **HTTP Request / Send Webhook** | Call any URL. JSON, form or raw bodies, custom headers and query params, saved auth credentials, retries. |
 | **Send Email** | Any SMTP server (Hostinger, Gmail, Zoho, SES, Brevo…). HTML and/or plain text, CC/BCC, reply-to, attachments by URL. |
+| **Google Sheets** | Add, read, update or clear rows. Matches your data to column titles, so nobody touches a cell reference. |
 | **Edit Fields** | Rename, add, remove and re-type fields before passing data on. No code needed. |
 | **Code (JavaScript)** | A sandboxed JS step for anything the other nodes can't express. |
 | **If / Else** | Two output paths — true and false — with 18 comparison operators. |
 | **Filter** | A gate: stop this branch unless the conditions match. |
+| **Loop Over Items** | Run a branch once per element of a list — order line items, spreadsheet rows — then continue on `Finished`. |
+| **Merge Branches** | Wait for two parallel branches and join them back into one. |
 | **Wait** | Pause for a duration or until a specific time. Long waits are persisted, so a redeploy doesn't lose the run. |
 | **Respond to Webhook** | Control exactly what the caller receives. |
+
+**Building without guesswork**
+
+- **Available Fields panel.** After any run, every field in the payload is listed as a searchable tree with sample values and type badges. Click one and the correct expression drops into whatever input you were typing in. No more hand-writing `{{ $json.body.first_name }}`.
+- **Pin data.** Paste a sample output onto any step and build everything downstream without re-triggering.
+- **Run from here.** Re-run starting at step five, using step four's recorded output.
+- **Duplicate step.** Copy a configured step, connections and all.
+- **Templates.** Five starter workflows covering the usual Uncanny Automator recipes.
 
 **Everywhere else**
 
@@ -35,6 +46,7 @@ Built with **MongoDB, Express, React and Node.js — all in TypeScript**. It dep
 - `{{ }}` expressions with a helper library — `{{ $fn.title($json.body.name) }}`
 - Full run history: every step's input, output, logs, duration and errors
 - Per-step retry policy and "continue on error"
+- **Failure alerts** — email on failure, or hand off to a dedicated error workflow
 - Encrypted credential store (AES-256-GCM) shared across workflows
 - Import/export workflows as JSON
 - Email + password sign-in, with owner / admin / member roles
@@ -70,7 +82,7 @@ Optional: `npm run seed --prefix server` adds a demo "webhook → clean data →
 npm run build          # compile server + build the React app
 npm start              # run the production build
 npm run typecheck      # type-check both packages
-npm test --prefix server   # 26 engine and HTTP tests, no database required
+npm test --prefix server   # 58 engine, graph, field and HTTP tests — no database required
 ```
 
 ---
