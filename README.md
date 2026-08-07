@@ -24,6 +24,7 @@ Built with **MongoDB, Express, React and Node.js — all in TypeScript**. It dep
 | **Send Email** | Any SMTP server (Hostinger, Gmail, Zoho, SES, Brevo…). HTML and/or plain text, CC/BCC, reply-to, attachments by URL. |
 | **Google Sheets** | Add, read, update or clear rows. Matches your data to column titles, so nobody touches a cell reference. |
 | **Edit Fields** | Rename, add, remove and re-type fields before passing data on. No code needed. |
+| **Calculate** | Add, subtract, multiply, divide, percentages, running chains, and totals from a list. |
 | **Code (JavaScript)** | A sandboxed JS step for anything the other nodes can't express. |
 | **If / Else** | Two output paths — true and false — with 18 comparison operators. |
 | **Filter** | A gate: stop this branch unless the conditions match. |
@@ -146,7 +147,30 @@ Anywhere you see a text field, wrap a value in `{{ }}`:
 
 Helpers include `upper lower trim title slug number round json parseJson first last length join split replace defaultTo dateFormat addDays encodeUrl base64 uuid now today`.
 
+**Formatting**
+
+| Expression | Result |
+| --- | --- |
+| `{{ $fn.phone($json.mobile) }}` | `919876543210` — adds the country code, strips spaces, `+`, dashes and leading zeros |
+| `{{ $fn.time($json.created_at) }}` | `2:50 pm` |
+| `{{ $fn.date($json.created_at) }}` | `07 Aug 2026` |
+| `{{ $fn.text($json.value) }}` | Stops Google Sheets reinterpreting the value |
+
+**Arithmetic** — `$fn.add $fn.sub $fn.mul $fn.div $fn.percentOf $fn.addPercent $fn.sum $fn.avg $fn.min $fn.max $fn.money`. For anything more than one operation, use the **Calculate** step.
+
 A missing field resolves to empty rather than crashing the run.
+
+---
+
+## Reliability
+
+Runs execute **exactly once**, which matters on platforms that restart containers routinely:
+
+- Traversal state is written after every step, so an interrupted run resumes at the point it stopped rather than replaying.
+- A run is claimed atomically and refuses to execute if it has already finished.
+- A failed workflow is a finished job — it is never retried as a whole. Retries belong to individual steps (`retryOnFail`).
+- Shutdown hands in-flight jobs straight back to the queue.
+- The Webhook trigger can ignore repeat deliveries from senders that retry.
 
 ---
 

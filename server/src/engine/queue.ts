@@ -15,6 +15,8 @@ export interface EnqueueOptions {
   runAt?: Date;
   /** Claim the job immediately so the caller can execute it in-process. */
   inline?: boolean;
+  /** Fingerprint used to ignore repeat webhook deliveries. */
+  dedupeKey?: string;
 }
 
 export interface EnqueueResult {
@@ -58,6 +60,7 @@ export async function enqueueRun(options: EnqueueOptions): Promise<EnqueueResult
     },
     steps: [],
     startedBy: options.startedBy,
+    dedupeKey: options.dedupeKey,
   });
 
   const job = await Job.create({
@@ -65,6 +68,11 @@ export async function enqueueRun(options: EnqueueOptions): Promise<EnqueueResult
     workflow: options.workflow._id,
     status: options.inline ? 'active' : 'pending',
     runAt: options.runAt ?? new Date(),
+    /*
+     * Attempts here mean "attempts to pick the job up", not "attempts to run
+     * the workflow". Because a run resumes from persisted state and refuses to
+     * execute twice, a retry continues where it left off — it never replays.
+     */
     maxAttempts: options.inline ? 1 : 3,
     lockedAt: options.inline ? new Date() : undefined,
     lockedBy: options.inline ? 'inline' : undefined,
@@ -73,6 +81,8 @@ export async function enqueueRun(options: EnqueueOptions): Promise<EnqueueResult
 
   return { runId: String(run._id), jobId: String(job._id) };
 }
+
+export type ClaimedJob = JobDoc;
 
 /** Atomically claims the next due job for this worker. */
 export async function claimNextJob(workerId: string): Promise<JobDoc | null> {
@@ -117,6 +127,22 @@ export async function failJob(job: JobDoc, error: string): Promise<void> {
     job.set('runAt', new Date(Date.now() + backoffMs));
   }
   await job.save();
+}
+
+/**
+ * Hands a job straight back to the queue without counting it as an attempt.
+ *
+ * Used during graceful shutdown: the run has persisted its state, so another
+ * instance can resume it immediately instead of waiting for the stale sweep.
+ */
+export async function releaseJob(job: JobDoc): Promise<void> {
+  await Job.updateOne(
+    { _id: job._id, status: 'active' },
+    {
+      $set: { status: 'pending', runAt: new Date(), lockedAt: null, lockedBy: null },
+      $inc: { attempts: -1 },
+    },
+  ).catch(() => undefined);
 }
 
 /** Re-schedules a job for a paused (waiting) run. */

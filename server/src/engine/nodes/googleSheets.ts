@@ -20,23 +20,59 @@ function quoteSheet(name: string): string {
 interface ColumnRow {
   column?: string;
   value?: unknown;
+  format?: string;
+}
+
+/**
+ * Applies the per-column format.
+ *
+ * Google Sheets parses whatever it is given: `2:50 pm` becomes a time value,
+ * `919876543210` can be shown in scientific notation, and a leading `+` or `0`
+ * is silently dropped. A leading apostrophe is the spreadsheet convention for
+ * "store this exactly as typed" — it is not shown in the cell.
+ */
+export function formatCell(value: unknown, format = 'auto'): unknown {
+  if (value === null || value === undefined) return '';
+
+  switch (format) {
+    case 'text':
+      return forceText(value);
+    case 'phone': {
+      const digits = String(value).replace(/\D/g, '');
+      return digits ? forceText(digits) : '';
+    }
+    case 'number': {
+      const parsed = Number(String(value).replace(/[^0-9.\-]/g, ''));
+      return Number.isFinite(parsed) ? parsed : '';
+    }
+    case 'auto':
+    default:
+      return value;
+  }
+}
+
+function forceText(value: unknown): string {
+  const text = String(value);
+  return text === '' || text.startsWith("'") ? text : `'${text}`;
 }
 
 /** Turns the mapping rows into a header-aligned array for the Sheets API. */
 export function buildRow(
   headers: string[],
   mappings: ColumnRow[],
+  defaultFormat = 'auto',
 ): { values: unknown[]; unmatched: string[] } {
-  const byName = new Map<string, unknown>();
+  const byName = new Map<string, ColumnRow>();
   for (const row of mappings) {
-    if (row?.column) byName.set(String(row.column).trim().toLowerCase(), row.value ?? '');
+    if (row?.column) byName.set(String(row.column).trim().toLowerCase(), row);
   }
 
   const values = headers.map((header) => {
     const key = header.trim().toLowerCase();
-    const value = byName.get(key);
+    const row = byName.get(key);
     byName.delete(key);
-    return value ?? '';
+    if (!row) return '';
+    return formatCell(row.value ?? '', row.format && row.format !== 'inherit' ? row.format : defaultFormat);
   });
 
   return { values, unmatched: [...byName.keys()] };
@@ -109,7 +145,41 @@ export const googleSheets: NodeDefinition = {
       fields: [
         { name: 'column', label: 'Column title', type: 'string', placeholder: 'Email' },
         { name: 'value', label: 'Value', type: 'string', placeholder: '{{ $json.body.email }}' },
+        {
+          name: 'format',
+          label: 'Store as',
+          type: 'select',
+          default: 'inherit',
+          options: [
+            { label: 'Default', value: 'inherit' },
+            { label: 'Text — exactly as written', value: 'text' },
+            { label: 'Phone number', value: 'phone' },
+            { label: 'Number', value: 'number' },
+            { label: 'Let Sheets decide', value: 'auto' },
+          ],
+        },
       ],
+      displayOptions: { show: { operation: ['append', 'update'] } },
+    },
+    {
+      name: 'defaultFormat',
+      label: 'Default for every column',
+      type: 'select',
+      default: 'text',
+      options: [
+        {
+          label: 'Text — keep values exactly as written (recommended)',
+          value: 'text',
+          description:
+            'Stops Sheets turning "2:50 pm" into a time value or mangling phone numbers.',
+        },
+        {
+          label: 'Let Sheets decide',
+          value: 'auto',
+          description: 'Numbers, dates and times are parsed. Use when you need to do sums.',
+        },
+      ],
+      description: 'Individual columns can override this above.',
       displayOptions: { show: { operation: ['append', 'update'] } },
     },
     {
@@ -224,7 +294,11 @@ export const googleSheets: NodeDefinition = {
       }
 
       const mappings = Array.isArray(params.columns) ? (params.columns as ColumnRow[]) : [];
-      const { values, unmatched } = buildRow(headers, mappings);
+      const { values, unmatched } = buildRow(
+        headers,
+        mappings,
+        String(params.defaultFormat ?? 'text'),
+      );
 
       if (unmatched.length > 0) {
         ctx.log(

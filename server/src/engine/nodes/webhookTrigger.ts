@@ -87,6 +87,23 @@ export const webhookTrigger: NodeDefinition = {
       displayOptions: { show: { responseMode: ['lastNode'] } },
     },
     {
+      name: 'dedupeWindowSeconds',
+      label: 'Ignore repeat deliveries for (seconds)',
+      type: 'number',
+      default: 0,
+      description:
+        'Many senders retry when a reply is slow, which would start the workflow twice. Set 60 to ignore an identical delivery arriving again within a minute. 0 turns this off.',
+    },
+    {
+      name: 'dedupeField',
+      label: 'Treat deliveries as identical when this matches',
+      type: 'string',
+      placeholder: 'body.order_id',
+      description:
+        'Optional. A field path such as body.order_id or headers["x-request-id"]. Leave blank to compare the whole body.',
+      displayOptions: { hide: { dedupeWindowSeconds: [0, '0'] } },
+    },
+    {
       name: 'rawBody',
       label: 'Keep raw body',
       type: 'boolean',
