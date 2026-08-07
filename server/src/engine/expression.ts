@@ -72,7 +72,120 @@ const helpers = {
   },
   encodeUrl: (v: unknown) => encodeURIComponent(String(v ?? '')),
   base64: (v: unknown) => Buffer.from(String(v ?? ''), 'utf8').toString('base64'),
+
+  /**
+   * Normalises a mobile number to full international form.
+   *
+   *   $fn.phone("98765 43210")        -> "919876543210"
+   *   $fn.phone("0 9876543210")       -> "919876543210"
+   *   $fn.phone("+91-9876543210")     -> "919876543210"
+   *   $fn.phone("9876543210", "44")   -> "449876543210"
+   *   $fn.phone("9876543210", "91", "+") -> "+919876543210"
+   *
+   * Already-prefixed numbers are left alone, so running it twice is harmless.
+   */
+  phone: (v: unknown, countryCode: string | number = '91', prefix = '') => {
+    const cc = String(countryCode).replace(/\D/g, '') || '91';
+    let digits = String(v ?? '').replace(/\D/g, '');
+    if (!digits) return '';
+
+    // Strip trunk zeros and any 00 international prefix.
+    digits = digits.replace(/^00/, '');
+    while (digits.startsWith('0')) digits = digits.slice(1);
+
+    // A 10-digit national number needs the country code; a longer one has it.
+    if (!digits.startsWith(cc) || digits.length <= 10) {
+      digits = `${cc}${digits}`;
+    }
+    return `${prefix}${digits}`;
+  },
+
+  /** Just the digits, no country code — useful for display. */
+  digits: (v: unknown) => String(v ?? '').replace(/\D/g, ''),
+
+  /**
+   * Formats a time as a short 12-hour string: "2:50 pm".
+   * Accepts an ISO date, a timestamp, or nothing (meaning now).
+   */
+  time: (v: unknown, timezone = 'Asia/Kolkata') => {
+    const date = v === undefined || v === null || v === '' ? new Date() : new Date(String(v));
+    if (Number.isNaN(date.getTime())) return '';
+    return date
+      .toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: timezone,
+      })
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+  },
+
+  /** Short date in the given timezone: "07 Aug 2026". */
+  date: (v: unknown, timezone = 'Asia/Kolkata') => {
+    const date = v === undefined || v === null || v === '' ? new Date() : new Date(String(v));
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      timeZone: timezone,
+    });
+  },
+
+  /**
+   * Forces a value to be stored as literal text in Google Sheets.
+   *
+   * Sheets parses anything that looks like a number or a time, so "2:50 pm"
+   * becomes a time value and a phone number loses its leading digits. A leading
+   * apostrophe is the spreadsheet convention for "leave this exactly as typed" —
+   * it is not displayed in the cell.
+   */
+  text: (v: unknown) => {
+    const value = v === null || v === undefined ? '' : String(v);
+    if (value === '' || value.startsWith("'")) return value;
+    return `'${value}`;
+  },
+
+  // ---- arithmetic ---------------------------------------------------------
+  add: (a: unknown, b: unknown) => toNumber(a) + toNumber(b),
+  sub: (a: unknown, b: unknown) => toNumber(a) - toNumber(b),
+  mul: (a: unknown, b: unknown) => toNumber(a) * toNumber(b),
+  div: (a: unknown, b: unknown) => {
+    const divisor = toNumber(b);
+    return divisor === 0 ? 0 : toNumber(a) / divisor;
+  },
+  mod: (a: unknown, b: unknown) => {
+    const divisor = toNumber(b);
+    return divisor === 0 ? 0 : toNumber(a) % divisor;
+  },
+  pow: (a: unknown, b: unknown) => toNumber(a) ** toNumber(b),
+  /** `$fn.percentOf(1200, 18)` -> 216 */
+  percentOf: (value: unknown, percent: unknown) => (toNumber(value) * toNumber(percent)) / 100,
+  /** `$fn.addPercent(1200, 18)` -> 1416 (handy for GST) */
+  addPercent: (value: unknown, percent: unknown) =>
+    toNumber(value) + (toNumber(value) * toNumber(percent)) / 100,
+  sum: (list: unknown) => (Array.isArray(list) ? list.reduce<number>((t, v) => t + toNumber(v), 0) : toNumber(list)),
+  avg: (list: unknown) =>
+    Array.isArray(list) && list.length > 0
+      ? list.reduce<number>((t, v) => t + toNumber(v), 0) / list.length
+      : 0,
+  min: (list: unknown) => (Array.isArray(list) ? Math.min(...list.map(toNumber)) : toNumber(list)),
+  max: (list: unknown) => (Array.isArray(list) ? Math.max(...list.map(toNumber)) : toNumber(list)),
+  /** Fixed decimal places, returned as a string: "1416.00" */
+  money: (v: unknown, digits = 2) => toNumber(v).toFixed(digits),
 };
+
+/** Lenient number parsing — copes with "₹1,200.50" and " 42 ". */
+export function toNumber(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  if (value === null || value === undefined) return 0;
+
+  const cleaned = String(value).replace(/[^0-9.\-eE]/g, '');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export type ExpressionHelpers = typeof helpers;
 

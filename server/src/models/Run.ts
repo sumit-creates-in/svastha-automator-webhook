@@ -4,6 +4,13 @@ import { env } from '../config/env';
 export const RUN_STATUSES = ['queued', 'running', 'waiting', 'success', 'error', 'cancelled'] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
+/** Once a run reaches one of these it must never execute again. */
+export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ['success', 'error', 'cancelled'];
+
+export function isTerminalStatus(status: unknown): boolean {
+  return TERMINAL_RUN_STATUSES.includes(status as RunStatus);
+}
+
 const stepSchema = new Schema(
   {
     nodeId: String,
@@ -34,13 +41,28 @@ const runSchema = new Schema(
       payload: Schema.Types.Mixed,
     },
     steps: { type: [stepSchema], default: [] },
-    /** Serialised engine state, used to resume a run after a Delay node. */
+    /**
+     * Serialised engine state. Written after every step so that a run
+     * interrupted by a crash, redeploy or container restart resumes exactly
+     * where it stopped instead of replaying steps that already ran.
+     */
     state: { type: Schema.Types.Mixed, select: false },
+    /**
+     * Execution lock. A run is a one-shot thing — these fields stop two workers
+     * (or a worker and an inline webhook handler) executing it at the same time.
+     */
+    lockedBy: { type: String },
+    lockedAt: { type: Date },
     error: String,
     startedAt: Date,
     finishedAt: Date,
     durationMs: Number,
     startedBy: { type: Schema.Types.ObjectId, ref: 'User' },
+    /**
+     * Fingerprint of the incoming payload, used to ignore repeat deliveries from
+     * senders that retry when they don't get a fast enough reply.
+     */
+    dedupeKey: { type: String, index: true, sparse: true },
     expiresAt: { type: Date },
   },
   { timestamps: true },

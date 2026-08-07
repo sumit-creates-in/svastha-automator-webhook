@@ -1,3 +1,87 @@
+# What changed in v1.2
+
+## Duplicate actions, inconsistent sheet rows, unreliable email
+
+All three symptoms were one bug, and your logs pinned it down.
+
+### The evidence
+
+```
+container up for 11.5 s   started 2026-08-06T08:40:03
+container up for 14.6 s   started 2026-08-07T04:56:01
+container up for 15.1 s   started 2026-08-07T04:57:00
+container up for 13.8 s   started 2026-08-07T05:17:42
+container up for 15.6 s   started 2026-08-07T05:19:20
+```
+
+The container was being killed roughly every **fifteen seconds**, five times over. The 08-06 entry shows the app getting as far as `Engine worker started` before `Stopping Container` arrived six seconds later.
+
+### Why that produced duplicates
+
+1. A run starts. The worker claims its job (`status: 'active'`).
+2. The container is killed part-way through — say after the HTTP Request but before the email.
+3. The job stays locked. Ten minutes later `reclaimStalledJobs()` returns it to `pending`.
+4. A worker picks it up and calls `executeRun(runId)`.
+5. **`state` was only persisted on a Wait step.** With nothing to resume from, `runGraph` re-seeded from the trigger and replayed *everything* — sending the webhook again and adding the spreadsheet row again.
+
+Independently, `failJob()` retried the whole run up to three times on any failure, replaying every already-successful step each time.
+
+That accounts for each symptom exactly:
+
+| Symptom | Cause |
+| --- | --- |
+| Webhook called several times | Replay from the trigger on reclaim/retry |
+| Sheets row sometimes added, sometimes not, sometimes twice | Killed before the step on one attempt, replayed on the next |
+| Email sometimes sent, sometimes not | It was last in the chain — often the container died first |
+
+### The fix
+
+- **State is persisted after every step**, not just on Wait (`executor.ts`, `onStep`). An interrupted run resumes from the exact point it stopped; steps in `state.executed` never run again.
+- **Runs are one-shot.** `executeRun` now claims the run with an atomic `findOneAndUpdate` and refuses anything already in a terminal state, so a double-claimed job is a no-op rather than a second execution.
+- **Whole-run retries removed.** A failed workflow is a *finished* job — `worker.process` calls `completeJob`, not `failJob`. Step-level `retryOnFail` remains the right place to retry, because it retries one step rather than the whole graph.
+- **Graceful shutdown hands jobs back immediately** instead of leaving them locked for the ten-minute stale sweep.
+- **Incoming duplicate suppression.** The Webhook trigger gains *"Ignore repeat deliveries for (seconds)"* — many senders retry when a reply is slow, which would otherwise start the workflow twice. Optionally keyed on a field such as `body.order_id`.
+
+Two regression tests lock this in: *a run interrupted mid-way resumes without replaying finished steps*, and *resuming from persisted state never re-seeds from the trigger*.
+
+> **Worth investigating separately:** a container restarting every fifteen seconds is not normal. The engine now tolerates it, but it will still cost you latency and half-finished runs. Check Railway → Deployments for OOM kills, and confirm `/api/health` responds before `healthcheckTimeout`. If those logs were captured during a burst of redeploys, you can ignore this.
+
+## Phone numbers and times as literal text
+
+Google Sheets parses whatever it is handed: `2:50 pm` becomes a time value, and a phone number can lose its leading digits or appear in scientific notation.
+
+New expression helpers:
+
+| Expression | Result |
+| --- | --- |
+| `{{ $fn.phone($json.mobile) }}` | `919876543210` — adds 91, strips spaces, `+`, dashes and leading zeros |
+| `{{ $fn.phone($json.mobile, '44') }}` | Any country code |
+| `{{ $fn.phone($json.mobile, '91', '+') }}` | `+919876543210` |
+| `{{ $fn.time($json.created_at) }}` | `2:50 pm` (Asia/Kolkata by default) |
+| `{{ $fn.date($json.created_at) }}` | `07 Aug 2026` |
+| `{{ $fn.text($json.anything) }}` | Prefixes `'` so Sheets stores it verbatim |
+
+Running `$fn.phone` twice is harmless — an already-prefixed number is left alone.
+
+The **Google Sheets** node now has a **Store as** setting per column (Text / Phone number / Number / Let Sheets decide), plus a **Default for every column** which is set to **Text** — so values arrive exactly as written unless you ask otherwise.
+
+## Calculate node
+
+Arithmetic without code, in four modes:
+
+- **Two values and an operation** — add, subtract, multiply, divide, remainder, power, percent of, add percent, subtract percent, smaller, larger.
+- **A chain of steps** — start from a value, then apply operations in order. `1000 − 100 + 18% = 1062`.
+- **A formula** — `({{ $json.price }} * {{ $json.qty }}) * 1.18`, with `round`, `floor`, `ceil`, `abs`, `min`, `max`, `sqrt`. Anything that is not plain arithmetic is rejected before evaluation.
+- **Totals from a list** — sum, average, count, smallest or largest across an array, optionally reading one field from each item.
+
+Plus rounding control, a nested output field (`order.grandTotal`), and an optional `…Text` version with fixed decimals for emails and spreadsheets. Division by zero gives `0`, never `Infinity`.
+
+Inline equivalents also exist: `$fn.add $fn.sub $fn.mul $fn.div $fn.percentOf $fn.addPercent $fn.sum $fn.avg $fn.min $fn.max $fn.money`.
+
+Test suite: **58 → 81**.
+
+---
+
 # What changed in v1.1
 
 ## Bug fixes

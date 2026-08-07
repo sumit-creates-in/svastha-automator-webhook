@@ -4,7 +4,13 @@ import { decryptJson } from '../lib/crypto';
 import { toErrorMessage } from '../lib/errors';
 import { logger } from '../lib/logger';
 import { Connection } from '../models/Connection';
-import { Run, runExpiryDate, type RunDoc } from '../models/Run';
+import {
+  Run,
+  runExpiryDate,
+  isTerminalStatus,
+  TERMINAL_RUN_STATUSES,
+  type RunDoc,
+} from '../models/Run';
 import { Workflow } from '../models/Workflow';
 import { handleRunFailure } from './errorHandler';
 import { resolveValue } from './expression';
@@ -111,9 +117,52 @@ function toGraphNodes(nodes: WorkflowNode[]): GraphNode[] {
  * All graph walking lives in `graph.ts`; this function supplies the side effects —
  * expression resolution, credentials, retries and persistence.
  */
-export async function executeRun(runId: string): Promise<ExecuteResult> {
-  const run = await Run.findById(runId).select('+state');
-  if (!run) return { status: 'error', error: 'Run not found' };
+export async function executeRun(runId: string, workerId = 'inline'): Promise<ExecuteResult> {
+  /*
+   * Claim the run atomically.
+   *
+   * Containers get restarted (deploys, health checks, OOM), which leaves jobs
+   * locked and later reclaimed. Without this guard the reclaimed job would run
+   * a second time — resending webhooks, re-adding spreadsheet rows and
+   * re-sending emails. A run executes at most once; the only way back in is by
+   * resuming persisted state, below.
+   */
+  const staleCutoff = new Date(Date.now() - env.engine.stalledAfterMs);
+  const claimed = await Run.findOneAndUpdate(
+    {
+      _id: runId,
+      status: { $nin: TERMINAL_RUN_STATUSES },
+      $or: [
+        { lockedAt: { $exists: false } },
+        { lockedAt: null },
+        { lockedAt: { $lt: staleCutoff } },
+        { lockedBy: workerId },
+      ],
+    },
+    { $set: { status: 'running', lockedBy: workerId, lockedAt: new Date() } },
+    { new: true },
+  ).select('+state');
+
+  if (!claimed) {
+    // Either the run already finished, or another worker holds it.
+    const existing = await Run.findById(runId).select('status error').lean();
+    if (!existing) return { status: 'error', error: 'Run not found' };
+
+    if (isTerminalStatus(existing.status)) {
+      logger.debug({ runId, status: existing.status }, 'Run already finished — not re-running');
+      return existing.status === 'success'
+        ? { status: 'success' }
+        : {
+            status: existing.status === 'cancelled' ? 'cancelled' : 'error',
+            error: existing.error ?? undefined,
+          };
+    }
+
+    logger.warn({ runId }, 'Run is locked by another worker — skipping');
+    return { status: 'error', error: 'Run is already executing elsewhere' };
+  }
+
+  const run = claimed;
 
   const workflow = await Workflow.findById(run.workflow).lean();
   if (!workflow) {
@@ -268,7 +317,19 @@ export async function executeRun(runId: string): Promise<ExecuteResult> {
         logs: logsByNode.get(record.nodeId) ?? [],
         tries: triesByNode.get(record.nodeId) ?? 1,
       } as RunStepRecord);
-      // Persist incrementally so the UI can follow a long run live.
+
+      /*
+       * Persist the traversal state after EVERY step, not just on a Wait.
+       *
+       * This is what makes an interrupted run resumable. If the process dies
+       * here, the reclaimed job picks up from the queue as it stands — the
+       * steps already executed are in `state.executed` and will not run again.
+       * Skipping this write is what caused duplicate webhooks and spreadsheet
+       * rows after a container restart.
+       */
+      run.set('state', currentState);
+      run.set('lockedAt', new Date());
+
       await run.save().catch((error) => {
         logger.warn({ runId, err: toErrorMessage(error) }, 'Could not persist run progress');
       });
@@ -280,6 +341,9 @@ export async function executeRun(runId: string): Promise<ExecuteResult> {
   if (result.status === 'waiting') {
     run.set('status', 'waiting');
     run.set('state', result.state);
+    // Release the lock — the resume may well happen in a different process.
+    run.set('lockedBy', undefined);
+    run.set('lockedAt', undefined);
     await run.save();
     return { status: 'waiting', resumeAt: result.resumeAt, webhookResponse };
   }
@@ -326,6 +390,9 @@ async function finishRun(run: RunDoc, status: 'success' | 'error', error?: strin
   run.set('finishedAt', finishedAt);
   run.set('durationMs', run.startedAt ? finishedAt.getTime() - run.startedAt.getTime() : 0);
   run.set('state', undefined);
+  // Release the lock so the terminal status is the only thing guarding re-entry.
+  run.set('lockedBy', undefined);
+  run.set('lockedAt', undefined);
   run.set('expiresAt', runExpiryDate());
   await run.save();
 }

@@ -294,6 +294,77 @@ test('a Wait step pauses and the resumed run finishes the remaining branches', a
   assert.ok(order.includes('b'), 'the parallel branch must not be lost');
 });
 
+test('a run interrupted mid-way resumes without replaying finished steps', async () => {
+  // Reproduces the container-restart duplication: the process dies after the
+  // HTTP step, the job is reclaimed, and the run continues. The webhook must NOT
+  // be sent twice and the sheet row must NOT be written twice.
+  const calls: string[] = [];
+  const nodes = [node('trigger'), node('http'), node('sheet'), node('email')];
+  const edges = [edge('trigger', 'http'), edge('http', 'sheet'), edge('sheet', 'email')];
+
+  let killAfter = 'sheet';
+  const execute = async (n: GraphNode) => {
+    calls.push(n.id);
+    if (n.id === killAfter) throw new Error('__container_died__');
+    return { kind: 'output', data: { ok: n.id } } as StepOutcome;
+  };
+
+  // First attempt: trigger → http → sheet (dies).
+  const first = await runGraph({ nodes, edges, startNodeId: 'trigger', execute });
+  assert.equal(first.status, 'error');
+  assert.deepEqual(calls, ['http', 'sheet']);
+
+  // The state is what would have been persisted before the crash.
+  const persisted = JSON.parse(JSON.stringify(first.state));
+
+  killAfter = 'none';
+  calls.length = 0;
+  const second = await runGraph({ nodes, edges, state: persisted, execute });
+
+  assert.equal(second.status, 'success');
+  assert.equal(
+    calls.filter((id) => id === 'http').length,
+    0,
+    'the HTTP step already ran — it must not be sent again',
+  );
+});
+
+test('resuming from persisted state never re-seeds from the trigger', async () => {
+  const calls: string[] = [];
+  const nodes = [node('trigger'), node('a'), node('b')];
+  const edges = [edge('trigger', 'a'), edge('a', 'b')];
+
+  const first = await runGraph({
+    nodes,
+    edges,
+    startNodeId: 'trigger',
+    execute: async (n) => {
+      calls.push(n.id);
+      if (n.id === 'a') {
+        return { kind: 'wait', resumeAt: new Date(Date.now() + 1000), data: {} } as StepOutcome;
+      }
+      return { kind: 'output', data: {} } as StepOutcome;
+    },
+  });
+  assert.equal(first.status, 'waiting');
+
+  calls.length = 0;
+  // startNodeId is still supplied, exactly as the executor does on resume.
+  const resumed = await runGraph({
+    nodes,
+    edges,
+    startNodeId: 'trigger',
+    state: JSON.parse(JSON.stringify(first.state)),
+    execute: async (n) => {
+      calls.push(n.id);
+      return { kind: 'output', data: {} } as StepOutcome;
+    },
+  });
+
+  assert.equal(resumed.status, 'success');
+  assert.deepEqual(calls, ['b'], 'only the outstanding step should run');
+});
+
 test('runaway graphs are stopped by the step ceiling', async () => {
   const result = await runGraph({
     nodes: [node('trigger'), node('a'), node('b')],

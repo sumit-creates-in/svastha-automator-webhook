@@ -12,6 +12,7 @@ import delay from './nodes/delay';
 import code from './nodes/code';
 import respondToWebhook from './nodes/respondToWebhook';
 import googleSheets from './nodes/googleSheets';
+import calculate from './nodes/calculate';
 import loopItems from './nodes/loopItems';
 import merge from './nodes/merge';
 
@@ -35,6 +36,7 @@ const definitions: NodeDefinition[] = [
   respondToWebhook,
   // Data
   transform,
+  calculate,
   code,
   // Logic
   ifCondition,

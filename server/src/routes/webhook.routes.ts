@@ -1,12 +1,15 @@
+import crypto from 'node:crypto';
 import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { executeRun } from '../engine/executor';
+import { getPath } from '../engine/expression';
 import { enqueueRun } from '../engine/queue';
 import type { WorkflowNode } from '../engine/types';
 import { hmacSha256Hex, safeCompare } from '../lib/crypto';
 import { asyncHandler } from '../lib/errors';
 import { logger } from '../lib/logger';
 import { Job } from '../models/Job';
+import { Run } from '../models/Run';
 import { Workflow } from '../models/Workflow';
 
 const router = Router();
@@ -112,6 +115,40 @@ const handleWebhook = asyncHandler(async (req, res) => {
       payload.rawBody = (req as Request & { rawBody?: string }).rawBody ?? '';
     }
 
+    // Ignore a delivery we have already accepted, if the author asked us to.
+    const dedupeWindow = Number(params.dedupeWindowSeconds ?? 0);
+    let dedupeKey: string | undefined;
+
+    if (dedupeWindow > 0) {
+      const basis = params.dedupeField
+        ? getPath(payload, String(params.dedupeField))
+        : (req as Request & { rawBody?: string }).rawBody ?? JSON.stringify(req.body ?? {});
+
+      dedupeKey = crypto
+        .createHash('sha256')
+        .update(`${workflow._id}:${triggerNode.id}:${JSON.stringify(basis ?? '')}`)
+        .digest('hex');
+
+      const since = new Date(Date.now() - dedupeWindow * 1000);
+      const previous = await Run.findOne({ dedupeKey, createdAt: { $gte: since } })
+        .select('_id')
+        .lean();
+
+      if (previous) {
+        logger.info(
+          { workflow: workflow.name, runId: String(previous._id) },
+          'Ignored a duplicate webhook delivery',
+        );
+        res.status(200).json({
+          accepted: true,
+          duplicate: true,
+          runId: String(previous._id),
+          note: `An identical delivery was already accepted within the last ${dedupeWindow}s.`,
+        });
+        return;
+      }
+    }
+
     const responseMode = String(params.responseMode ?? 'immediately');
 
     if (responseMode !== 'lastNode') {
@@ -120,6 +157,7 @@ const handleWebhook = asyncHandler(async (req, res) => {
         triggerNode,
         payload,
         mode: 'webhook',
+        dedupeKey,
       });
       res.status(202).json({ accepted: true, runId });
       return;
@@ -132,6 +170,7 @@ const handleWebhook = asyncHandler(async (req, res) => {
       payload,
       mode: 'webhook',
       inline: true,
+      dedupeKey,
     });
 
     const timeoutMs = Number(params.responseTimeoutMs ?? 30000);
