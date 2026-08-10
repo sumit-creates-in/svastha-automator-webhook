@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Ban, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,6 +12,7 @@ import { formatDateTime, formatDuration } from '@/lib/utils';
 export default function RunDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState<number | null>(0);
 
   const run = useQuery({
@@ -24,12 +25,22 @@ export default function RunDetail() {
   });
 
   const retry = useMutation({
-    mutationFn: async () => (await api.post<{ runId: string }>(`/runs/${id}/retry`)).data.runId,
-    onSuccess: (runId) => {
-      toast.success('Re-running with the same data');
-      navigate(`/runs/${runId}`);
+    mutationFn: async () =>
+      (
+        await api.post<{ runId: string; startedFrom?: string; note?: string }>(
+          `/runs/${id}/retry`,
+        )
+      ).data,
+    onSuccess: (data) => {
+      toast.success(
+        data.note ?? `Running "${data.startedFrom}" again with the same data`,
+      );
+      // Refresh the history so the new run is there when the user goes back.
+      void queryClient.invalidateQueries({ queryKey: ['runs'] });
+      setExpanded(0);
+      navigate(`/runs/${data.runId}`);
     },
-    onError: (error) => toast.error(errorMessage(error)),
+    onError: (error) => toast.error(errorMessage(error, 'Could not run that again')),
   });
 
   const cancel = useMutation({

@@ -25,6 +25,7 @@ import {
   Plus,
   Save,
   Settings,
+  Unlink,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import AvailableFields from '@/components/editor/AvailableFields';
@@ -83,7 +84,7 @@ function EditorInner() {
 
   // Hydrate local editor state once the workflow arrives.
   useEffect(() => {
-    if (!workflowQuery.data || loadedRef.current) return;
+    if (!workflowQuery.data || !catalogue.data || loadedRef.current) return;
     const workflow = workflowQuery.data.workflow;
     loadedRef.current = true;
 
@@ -95,29 +96,53 @@ function EditorInner() {
     setErrorEmailTo(workflow.settings?.errorEmailTo ?? '');
     setErrorEmailConnection(workflow.settings?.errorEmailConnection ?? '');
 
+    const byId = new Map((workflow.nodes ?? []).map((node) => [node.id, node]));
+
     setNodes(
       (workflow.nodes ?? []).map((node) => ({
         id: node.id,
         type: 'svastha',
         position: node.position,
-        data: { label: node.name, disabled: node.disabled } as FlowNodeData,
+        data: {
+          label: node.name,
+          disabled: node.disabled,
+          // Present immediately, so handles render on the very first pass.
+          definition: findDefinition(catalogue.data, node.type),
+          subtitle: findDefinition(catalogue.data, node.type)?.displayName,
+        } as FlowNodeData,
       })),
     );
+
     setEdges(
-      (workflow.edges ?? []).map((edge) => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        sourceHandle: edge.sourceHandle ?? 'main',
-        // `main` is our stored default for single-input steps, whose handle is
-        // unnamed on the canvas — map it back to null so React Flow re-attaches.
-        targetHandle:
-          !edge.targetHandle || edge.targetHandle === 'main' ? null : edge.targetHandle,
-        animated: true,
-        type: 'smoothstep',
-      })),
+      (workflow.edges ?? [])
+        // Drop edges pointing at steps that no longer exist rather than letting
+        // React Flow silently discard them (and lose them on the next save).
+        .filter((edge) => byId.has(edge.source) && byId.has(edge.target))
+        .map((edge) => {
+          const targetDefinition = findDefinition(catalogue.data, byId.get(edge.target)!.type);
+          const namedInputs = (targetDefinition?.inputHandles ?? []).map((input) => input.name);
+
+          return {
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            sourceHandle: edge.sourceHandle ?? 'main',
+            /*
+             * Single-input steps use the default unnamed handle, so their edges
+             * must carry `null`. Only keep a stored name when the target really
+             * does expose a handle by that name — otherwise the edge would
+             * reference a handle that does not exist and vanish again.
+             */
+            targetHandle:
+              edge.targetHandle && namedInputs.includes(edge.targetHandle)
+                ? edge.targetHandle
+                : null,
+            animated: true,
+            type: 'smoothstep',
+          };
+        }),
     );
-  }, [workflowQuery.data, setNodes, setEdges]);
+  }, [workflowQuery.data, catalogue.data, setNodes, setEdges]);
 
   const definitionsByType = useMemo(() => {
     const map = new Map<string, ReturnType<typeof findDefinition>>();
@@ -493,6 +518,7 @@ function EditorInner() {
 
   const selectedMeta = meta.find((node) => node.id === selectedId);
   const errorIssues = issues.filter((issue) => issue.level === 'error');
+  const warningIssues = issues.filter((issue) => issue.level === 'warning');
   const hasTrigger = meta.some((node) => definitionsByType.get(node.id)?.group === 'trigger');
   const webhookUrls = workflowQuery.data?.workflow.webhookUrls ?? {};
 
@@ -570,6 +596,14 @@ function EditorInner() {
             <span className="font-semibold">Needs attention before going live:</span>{' '}
             {errorIssues.map((issue) => issue.message).join(' · ')}
           </div>
+        </div>
+      ) : null}
+
+      {/* Disconnected steps are the visible symptom of a lost connection. */}
+      {warningIssues.length > 0 ? (
+        <div className="flex items-start gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-600">
+          <Unlink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
+          <div>{warningIssues.map((issue) => issue.message).join(' · ')}</div>
         </div>
       ) : null}
 

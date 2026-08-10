@@ -28,7 +28,7 @@ export interface GraphNode {
   /** Number of input handles. Anything above 1 makes the node a join point. */
   inputs: number;
   disabled?: boolean;
-  onError?: 'stop' | 'continue';
+  onError?: "stop" | "continue";
 }
 
 export interface GraphEdge {
@@ -52,12 +52,12 @@ export interface QueueItem {
 
 export type PendingBarrier =
   | {
-      type: 'join';
+      type: "join";
       nodeId: string;
       arrivals: Array<{ handle: string; data: Record<string, unknown> }>;
     }
   | {
-      type: 'loopDone';
+      type: "loopDone";
       nodeId: string;
       data: Record<string, unknown>;
     };
@@ -72,12 +72,12 @@ export interface TraversalState {
 }
 
 export type StepOutcome =
-  | { kind: 'output'; data: Record<string, unknown>; outputs?: string[] }
-  | { kind: 'stop'; data?: Record<string, unknown>; reason?: string }
-  | { kind: 'wait'; resumeAt: Date; data: Record<string, unknown> }
+  | { kind: "output"; data: Record<string, unknown>; outputs?: string[] }
+  | { kind: "stop"; data?: Record<string, unknown>; reason?: string }
+  | { kind: "wait"; resumeAt: Date; data: Record<string, unknown> }
   | {
       /** Loop Over Items: run the `handle` branch once per element. */
-      kind: 'fanOut';
+      kind: "fanOut";
       items: Array<Record<string, unknown>>;
       handle: string;
       doneData?: Record<string, unknown>;
@@ -87,7 +87,7 @@ export interface StepRecord {
   nodeId: string;
   nodeName: string;
   nodeType: string;
-  status: 'success' | 'error' | 'skipped' | 'stopped' | 'waiting';
+  status: "success" | "error" | "skipped" | "stopped" | "waiting";
   input?: unknown;
   output?: unknown;
   error?: string;
@@ -102,13 +102,22 @@ export interface RunGraphOptions {
   /** Trigger node id — only used when starting a fresh run. */
   startNodeId?: string;
   startData?: Record<string, unknown>;
+  /**
+   * Run the start node itself rather than treating it as an already-completed
+   * trigger. Needed by "Run from here", where the chosen step must actually
+   * execute — without this the run would begin at the step *after* it.
+   */
+  executeStartNode?: boolean;
   /** Provide to resume a paused run instead of starting from the trigger. */
   state?: TraversalState;
   execute: (node: GraphNode, item: QueueItem) => Promise<StepOutcome>;
   /** Called for every step, including skips and failures. */
   onStep?: (record: StepRecord) => void | Promise<void>;
   /** Called after a node succeeds, before its downstream edges are followed. */
-  onOutput?: (node: GraphNode, data: Record<string, unknown>) => void | Promise<void>;
+  onOutput?: (
+    node: GraphNode,
+    data: Record<string, unknown>,
+  ) => void | Promise<void>;
   maxSteps?: number;
   /** Return true to abort with a timeout error. */
   isCancelled?: () => boolean;
@@ -116,9 +125,13 @@ export interface RunGraphOptions {
 }
 
 export type RunGraphResult =
-  | { status: 'success'; state: TraversalState; lastOutput: Record<string, unknown> }
-  | { status: 'error'; state: TraversalState; error: string; nodeId?: string }
-  | { status: 'waiting'; state: TraversalState; resumeAt: Date };
+  | {
+      status: "success";
+      state: TraversalState;
+      lastOutput: Record<string, unknown>;
+    }
+  | { status: "error"; state: TraversalState; error: string; nodeId?: string }
+  | { status: "waiting"; state: TraversalState; resumeAt: Date };
 
 export const DEFAULT_MAX_STEPS = 1000;
 
@@ -129,7 +142,8 @@ export function outgoingEdges(
   handles: string[],
 ): GraphEdge[] {
   return edges.filter(
-    (edge) => edge.source === nodeId && handles.includes(edge.sourceHandle ?? 'main'),
+    (edge) =>
+      edge.source === nodeId && handles.includes(edge.sourceHandle ?? "main"),
   );
 }
 
@@ -139,7 +153,13 @@ export function inboundEdges(edges: GraphEdge[], nodeId: string): GraphEdge[] {
 }
 
 export function createInitialState(): TraversalState {
-  return { queue: [], barriers: [], nodeOutputs: {}, executed: [], stepCount: 0 };
+  return {
+    queue: [],
+    barriers: [],
+    nodeOutputs: {},
+    executed: [],
+    stepCount: 0,
+  };
 }
 
 function isJoin(node: GraphNode | undefined): boolean {
@@ -148,7 +168,7 @@ function isJoin(node: GraphNode | undefined): boolean {
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
+  if (typeof error === "string") return error;
   return String(error);
 }
 
@@ -166,21 +186,21 @@ function dispatch(
   nodeId: string,
   handles: string[],
   data: Record<string, unknown>,
-  loop?: QueueItem['loop'],
+  loop?: QueueItem["loop"],
 ): void {
   for (const edge of outgoingEdges(edges, nodeId, handles)) {
     const target = nodes.get(edge.target);
-    const handle = edge.targetHandle ?? 'main';
+    const handle = edge.targetHandle ?? "main";
 
     if (isJoin(target)) {
       // Buffer the arrival; the Merge runs once its branches have all reported,
       // or when nothing else is left to do.
       let barrier = state.barriers.find(
-        (entry): entry is Extract<PendingBarrier, { type: 'join' }> =>
-          entry.type === 'join' && entry.nodeId === edge.target,
+        (entry): entry is Extract<PendingBarrier, { type: "join" }> =>
+          entry.type === "join" && entry.nodeId === edge.target,
       );
       if (!barrier) {
-        barrier = { type: 'join', nodeId: edge.target, arrivals: [] };
+        barrier = { type: "join", nodeId: edge.target, arrivals: [] };
         state.barriers.push(barrier);
       }
       barrier.arrivals.push({ handle, data });
@@ -211,7 +231,7 @@ function releaseBarrier(
   const barrier = state.barriers.shift();
   if (!barrier) return false;
 
-  if (barrier.type === 'join') {
+  if (barrier.type === "join") {
     state.queue.push({
       nodeId: barrier.nodeId,
       input: barrier.arrivals[0]?.data ?? {},
@@ -221,7 +241,7 @@ function releaseBarrier(
   }
 
   // Loop finished: continue from its `done` output.
-  dispatch(state, nodes, edges, barrier.nodeId, ['done'], barrier.data);
+  dispatch(state, nodes, edges, barrier.nodeId, ["done"], barrier.data);
   return true;
 }
 
@@ -231,7 +251,9 @@ function releaseBarrier(
  * Never throws: failures are reported through the result so the caller can
  * record them and decide what to do.
  */
-export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult> {
+export async function runGraph(
+  options: RunGraphOptions,
+): Promise<RunGraphResult> {
   const {
     nodes: nodeList,
     edges,
@@ -240,7 +262,7 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
     onOutput,
     maxSteps = DEFAULT_MAX_STEPS,
     isCancelled,
-    cancelMessage = 'Run exceeded its time limit',
+    cancelMessage = "Run exceeded its time limit",
   } = options;
 
   const nodes = new Map(nodeList.map((node) => [node.id, node]));
@@ -249,16 +271,29 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
   // Fresh run: seed the queue from the trigger's outgoing edges. A state that
   // still has nothing queued and nothing executed counts as fresh, so callers
   // may always pass a state object and let this decide.
-  const isFresh = state.queue.length === 0 && state.executed.length === 0 && state.barriers.length === 0;
+  const isFresh =
+    state.queue.length === 0 &&
+    state.executed.length === 0 &&
+    state.barriers.length === 0;
   if (isFresh && options.startNodeId) {
     const trigger = nodes.get(options.startNodeId);
     if (!trigger) {
-      return { status: 'error', state, error: 'Trigger node not found in this workflow' };
+      return {
+        status: "error",
+        state,
+        error: "Trigger node not found in this workflow",
+      };
     }
     const startData = options.startData ?? {};
-    state.nodeOutputs[trigger.id] = startData;
-    state.executed.push(trigger.id);
-    dispatch(state, nodes, edges, trigger.id, ['main'], startData);
+
+    if (options.executeStartNode) {
+      state.queue.push({ nodeId: trigger.id, input: startData });
+    } else {
+      // A trigger has already "happened"; its payload is its output.
+      state.nodeOutputs[trigger.id] = startData;
+      state.executed.push(trigger.id);
+      dispatch(state, nodes, edges, trigger.id, ["main"], startData);
+    }
   }
 
   let lastOutput: Record<string, unknown> = options.startData ?? {};
@@ -268,13 +303,13 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
     if (state.queue.length === 0) continue;
 
     if (isCancelled?.()) {
-      return { status: 'error', state, error: cancelMessage };
+      return { status: "error", state, error: cancelMessage };
     }
 
     state.stepCount += 1;
     if (state.stepCount > maxSteps) {
       return {
-        status: 'error',
+        status: "error",
         state,
         error: `Run exceeded ${maxSteps} steps — check for a loop in the workflow`,
       };
@@ -294,12 +329,12 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
         nodeId: node.id,
         nodeName: node.name,
         nodeType: node.type,
-        status: 'skipped',
+        status: "skipped",
         startedAt,
         finishedAt: startedAt,
         durationMs: 0,
       });
-      dispatch(state, nodes, edges, node.id, ['main'], item.input, item.loop);
+      dispatch(state, nodes, edges, node.id, ["main"], item.input, item.loop);
       continue;
     }
 
@@ -313,7 +348,7 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
         nodeId: node.id,
         nodeName: node.name,
         nodeType: node.type,
-        status: 'error',
+        status: "error",
         input: item.input,
         error: message,
         startedAt,
@@ -321,46 +356,51 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
         durationMs: finishedAt.getTime() - startedAt.getTime(),
       });
 
-      if (node.onError === 'continue') {
+      if (node.onError === "continue") {
         const payload = { error: message, __failed: true, input: item.input };
         state.nodeOutputs[node.id] = payload;
         state.executed.push(node.id);
-        dispatch(state, nodes, edges, node.id, ['main'], payload, item.loop);
+        dispatch(state, nodes, edges, node.id, ["main"], payload, item.loop);
         continue;
       }
 
-      return { status: 'error', state, error: `${node.name}: ${message}`, nodeId: node.id };
+      return {
+        status: "error",
+        state,
+        error: `${node.name}: ${message}`,
+        nodeId: node.id,
+      };
     }
 
     const finishedAt = new Date();
     const durationMs = finishedAt.getTime() - startedAt.getTime();
 
-    if (outcome.kind === 'wait') {
+    if (outcome.kind === "wait") {
       // Park the continuation, then persist and hand back control.
       state.nodeOutputs[node.id] = outcome.data;
       state.executed.push(node.id);
-      dispatch(state, nodes, edges, node.id, ['main'], outcome.data, item.loop);
+      dispatch(state, nodes, edges, node.id, ["main"], outcome.data, item.loop);
       await onStep?.({
         nodeId: node.id,
         nodeName: node.name,
         nodeType: node.type,
-        status: 'waiting',
+        status: "waiting",
         input: item.input,
         output: { resumeAt: outcome.resumeAt },
         startedAt,
         finishedAt,
         durationMs,
       });
-      return { status: 'waiting', state, resumeAt: outcome.resumeAt };
+      return { status: "waiting", state, resumeAt: outcome.resumeAt };
     }
 
-    if (outcome.kind === 'stop') {
+    if (outcome.kind === "stop") {
       state.executed.push(node.id);
       await onStep?.({
         nodeId: node.id,
         nodeName: node.name,
         nodeType: node.type,
-        status: 'stopped',
+        status: "stopped",
         input: item.input,
         output: outcome.data,
         error: outcome.reason,
@@ -371,7 +411,7 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
       continue;
     }
 
-    if (outcome.kind === 'fanOut') {
+    if (outcome.kind === "fanOut") {
       const summary = {
         itemCount: outcome.items.length,
         ...(outcome.doneData ?? {}),
@@ -383,7 +423,7 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
         nodeId: node.id,
         nodeName: node.name,
         nodeType: node.type,
-        status: 'success',
+        status: "success",
         input: item.input,
         output: summary,
         startedAt,
@@ -400,8 +440,12 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
       });
 
       // `done` fires once every iteration has been processed.
-      if (outgoingEdges(edges, node.id, ['done']).length > 0) {
-        state.barriers.push({ type: 'loopDone', nodeId: node.id, data: summary });
+      if (outgoingEdges(edges, node.id, ["done"]).length > 0) {
+        state.barriers.push({
+          type: "loopDone",
+          nodeId: node.id,
+          data: summary,
+        });
       }
       continue;
     }
@@ -416,7 +460,7 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
       nodeId: node.id,
       nodeName: node.name,
       nodeType: node.type,
-      status: 'success',
+      status: "success",
       input: item.input,
       output: outcome.data,
       startedAt,
@@ -424,8 +468,16 @@ export async function runGraph(options: RunGraphOptions): Promise<RunGraphResult
       durationMs,
     });
 
-    dispatch(state, nodes, edges, node.id, outcome.outputs ?? ['main'], outcome.data, item.loop);
+    dispatch(
+      state,
+      nodes,
+      edges,
+      node.id,
+      outcome.outputs ?? ["main"],
+      outcome.data,
+      item.loop,
+    );
   }
 
-  return { status: 'success', state, lastOutput };
+  return { status: "success", state, lastOutput };
 }
