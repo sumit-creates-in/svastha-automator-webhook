@@ -9,6 +9,7 @@ import {
   deferJob,
   failJob,
   releaseJob,
+  reapOrphanedRuns,
   reclaimStalledJobs,
   type ClaimedJob,
 } from './queue';
@@ -42,6 +43,13 @@ export class Worker {
           if (count > 0) logger.warn({ count }, 'Reclaimed stalled jobs');
         })
         .catch((error) => logger.error({ err: toErrorMessage(error) }, 'Reclaim failed'));
+
+      // Close off runs nothing can finish, so they stop showing as "Running".
+      reapOrphanedRuns()
+        .then((count) => {
+          if (count > 0) logger.warn({ count }, 'Closed orphaned runs');
+        })
+        .catch((error) => logger.error({ err: toErrorMessage(error) }, 'Reaping failed'));
     }, 60_000);
   }
 

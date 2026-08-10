@@ -13,6 +13,7 @@ import {
   getGoogleAccessToken,
   readServiceAccount,
 } from '../lib/google';
+import { verifyGmailAccess } from '../lib/gmail';
 import { requireAuth } from '../middleware/auth';
 import { Connection } from '../models/Connection';
 
@@ -300,11 +301,24 @@ router.post(
       } else if (connection.type === 'googleServiceAccount') {
         readServiceAccount(config);
         await getGoogleAccessToken(config);
+
+        // Only meaningful once an address to send as has been set.
+        if (config.impersonateUser) {
+          const profile = await verifyGmailAccess(config);
+          connection.set('preview', {
+            ...(connection.preview ?? {}),
+            sendsAs: profile.emailAddress,
+          });
+        }
       } else if (connection.type === 'googleOAuth2') {
         if (!config.refreshToken) {
           throw new Error('Not authorised yet — click "Connect with Google".');
         }
-        await getGoogleAccessToken(config);
+        const profile = await verifyGmailAccess(config);
+        connection.set('preview', {
+          ...(connection.preview ?? {}),
+          account: profile.emailAddress,
+        });
       } else {
         // Credential types without a live endpoint just validate their shape.
         const definition = getConnectionDefinition(connection.type);

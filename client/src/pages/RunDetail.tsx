@@ -157,7 +157,13 @@ export default function RunDetail() {
                     <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Input
                     </div>
-                    <JsonViewer value={step.input} />
+                    {step.input === undefined ? (
+                      <p className="rounded-lg bg-white p-3 text-xs text-slate-500 ring-1 ring-slate-200">
+                        Nothing — this is where the workflow started.
+                      </p>
+                    ) : (
+                      <JsonViewer value={step.input} />
+                    )}
                   </div>
                   <div>
                     <div className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">

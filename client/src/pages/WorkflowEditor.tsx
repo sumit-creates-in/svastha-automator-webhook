@@ -82,7 +82,14 @@ function EditorInner() {
       (await api.get<{ workflow: Workflow; issues: ValidationIssue[] }>(`/workflows/${id}`)).data,
   });
 
-  // Hydrate local editor state once the workflow arrives.
+  /*
+   * Hydrate once BOTH the workflow and the node catalogue are available.
+   *
+   * Waiting for the catalogue matters: node definitions decide how many handles
+   * each step renders, and React Flow can only attach an edge to a handle that
+   * already exists. Seeding the canvas first and the definitions second left
+   * edges unresolved and therefore invisible until a zoom forced a recompute.
+   */
   useEffect(() => {
     if (!workflowQuery.data || !catalogue.data || loadedRef.current) return;
     const workflow = workflowQuery.data.workflow;
