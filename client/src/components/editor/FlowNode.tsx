@@ -1,5 +1,5 @@
-import { memo } from 'react';
-import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { memo, useEffect } from 'react';
+import { Handle, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
 import { AlertTriangle, CheckCircle2, EyeOff, XCircle } from 'lucide-react';
 import Icon from '@/components/Icon';
 import type { NodeTypeDefinition } from '@/lib/types';
@@ -15,12 +15,37 @@ export interface FlowNodeData extends Record<string, unknown> {
   subtitle?: string;
 }
 
-function FlowNodeComponent({ data, selected }: NodeProps) {
+function FlowNodeComponent({ id, data, selected }: NodeProps) {
   const nodeData = data as FlowNodeData;
   const definition = nodeData.definition;
   const isTrigger = definition?.group === 'trigger';
   const outputs = definition?.outputs ?? [{ name: 'main', label: 'Output' }];
   const color = definition?.color ?? '#64748b';
+
+  // Triggers take no input; everything else defaults to one until we know better.
+  const inputCount = definition ? definition.inputs : 1;
+  const inputHandles =
+    definition?.inputHandles ??
+    (inputCount > 1
+      ? Array.from({ length: inputCount }, (_, index) => ({
+        name: `input${index + 1}`,
+        label: `Input ${index + 1}`,
+      }))
+      : []);
+
+  /*
+   * Tell React Flow to re-measure when the handle set changes. Without this the
+   * canvas keeps the handle positions it computed on mount, and edges attached
+   * to handles that appeared later are drawn from the wrong place — or not at all.
+   */
+  const updateNodeInternals = useUpdateNodeInternals();
+  const handleSignature = `${inputCount}:${inputHandles.map((h) => h.name).join(',')}:${outputs
+    .map((output) => output.name)
+    .join(',')}`;
+
+  useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, handleSignature, updateNodeInternals]);
 
   return (
     <div
@@ -32,19 +57,26 @@ function FlowNodeComponent({ data, selected }: NodeProps) {
       )}
     >
       {/*
-        Single-input steps use the DEFAULT (unnamed) handle on purpose. Naming it
-        forces every edge to carry a matching targetHandle, and any edge saved
-        without one silently fails to re-attach on reload — which looked like
-        "only one action runs". Join nodes below do need names, and those are
-        persisted.
-      */}
-      {definition && definition.inputs === 1 ? (
-        <Handle type="target" position={Position.Left} />
-      ) : null}
+        Handles must exist on the FIRST render.
 
-      {definition && definition.inputs > 1 ? (
+        These used to be gated on `definition`, which arrives asynchronously with
+        the node catalogue. Edges were therefore added to the canvas before their
+        handles existed, React Flow could not resolve the endpoints, and the
+        connections stayed invisible until something forced a full recompute —
+        which is why zooming made them appear.
+
+        Defaulting to one input and one `main` output keeps every edge
+        resolvable from the outset; the definition only refines what is drawn.
+
+        Single-input steps deliberately use the DEFAULT (unnamed) handle, so an
+        edge without a targetHandle still attaches. Join nodes need names, and
+        those names are persisted.
+      */}
+      {inputCount === 1 ? <Handle type="target" position={Position.Left} /> : null}
+
+      {inputCount > 1 ? (
         <div className="absolute left-0 top-0 flex h-full flex-col justify-evenly">
-          {(definition.inputHandles ?? []).map((input) => (
+          {inputHandles.map((input) => (
             <div key={input.name} className="relative h-0">
               <Handle type="target" position={Position.Left} id={input.name} />
             </div>

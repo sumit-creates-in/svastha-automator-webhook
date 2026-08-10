@@ -1,20 +1,21 @@
-import type { NodeDefinition } from './types';
+import type { NodeDefinition } from "./types";
 
-import webhookTrigger from './nodes/webhookTrigger';
-import scheduleTrigger from './nodes/scheduleTrigger';
-import manualTrigger from './nodes/manualTrigger';
-import httpRequest from './nodes/httpRequest';
-import sendEmail from './nodes/sendEmail';
-import transform from './nodes/transform';
-import ifCondition from './nodes/ifCondition';
-import filter from './nodes/filter';
-import delay from './nodes/delay';
-import code from './nodes/code';
-import respondToWebhook from './nodes/respondToWebhook';
-import googleSheets from './nodes/googleSheets';
-import calculate from './nodes/calculate';
-import loopItems from './nodes/loopItems';
-import merge from './nodes/merge';
+import webhookTrigger from "./nodes/webhookTrigger";
+import scheduleTrigger from "./nodes/scheduleTrigger";
+import manualTrigger from "./nodes/manualTrigger";
+import httpRequest from "./nodes/httpRequest";
+import sendEmail from "./nodes/sendEmail";
+import transform from "./nodes/transform";
+import ifCondition from "./nodes/ifCondition";
+import filter from "./nodes/filter";
+import delay from "./nodes/delay";
+import code from "./nodes/code";
+import respondToWebhook from "./nodes/respondToWebhook";
+import googleSheets from "./nodes/googleSheets";
+import calculate from "./nodes/calculate";
+import dateTime from "./nodes/dateTime";
+import loopItems from "./nodes/loopItems";
+import merge from "./nodes/merge";
 
 /**
  * The node catalogue.
@@ -37,6 +38,7 @@ const definitions: NodeDefinition[] = [
   // Data
   transform,
   calculate,
+  dateTime,
   code,
   // Logic
   ifCondition,
@@ -46,7 +48,9 @@ const definitions: NodeDefinition[] = [
   merge,
 ];
 
-const registry = new Map<string, NodeDefinition>(definitions.map((d) => [d.type, d]));
+const registry = new Map<string, NodeDefinition>(
+  definitions.map((d) => [d.type, d]),
+);
 
 export function getNodeDefinition(type: string): NodeDefinition | undefined {
   return registry.get(type);
@@ -63,7 +67,7 @@ export function listNodeDefinitions(): NodeDefinition[] {
 }
 
 export function isTrigger(type: string): boolean {
-  return registry.get(type)?.group === 'trigger';
+  return registry.get(type)?.group === "trigger";
 }
 
 /** Serialisable view of a definition for the frontend (drops the execute function). */
@@ -77,8 +81,9 @@ export function defaultParamsFor(type: string): Record<string, unknown> {
   if (!definition) return {};
   const params: Record<string, unknown> = {};
   for (const property of definition.properties) {
-    if (property.type === 'notice') continue;
-    if (property.default !== undefined) params[property.name] = structuredClone(property.default);
+    if (property.type === "notice") continue;
+    if (property.default !== undefined)
+      params[property.name] = structuredClone(property.default);
   }
   return params;
 }

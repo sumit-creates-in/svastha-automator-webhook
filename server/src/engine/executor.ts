@@ -1,19 +1,19 @@
-import { Types } from 'mongoose';
-import { env } from '../config/env';
-import { decryptJson } from '../lib/crypto';
-import { toErrorMessage } from '../lib/errors';
-import { logger } from '../lib/logger';
-import { Connection } from '../models/Connection';
+import { Types } from "mongoose";
+import { env } from "../config/env";
+import { decryptJson } from "../lib/crypto";
+import { toErrorMessage } from "../lib/errors";
+import { logger } from "../lib/logger";
+import { Connection } from "../models/Connection";
 import {
   Run,
   runExpiryDate,
   isTerminalStatus,
   TERMINAL_RUN_STATUSES,
   type RunDoc,
-} from '../models/Run';
-import { Workflow } from '../models/Workflow';
-import { handleRunFailure } from './errorHandler';
-import { resolveValue } from './expression';
+} from "../models/Run";
+import { Workflow } from "../models/Workflow";
+import { handleRunFailure } from "./errorHandler";
+import { resolveValue } from "./expression";
 import {
   createInitialState,
   runGraph,
@@ -22,15 +22,15 @@ import {
   type QueueItem,
   type StepOutcome,
   type TraversalState,
-} from './graph';
-import { getNodeDefinition, requireNodeDefinition } from './registry';
+} from "./graph";
+import { getNodeDefinition, requireNodeDefinition } from "./registry";
 import type {
   ExpressionScope,
   NodeExecutionContext,
   RunStepRecord,
   WorkflowEdge,
   WorkflowNode,
-} from './types';
+} from "./types";
 
 export interface WebhookResponsePayload {
   statusCode: number;
@@ -40,7 +40,7 @@ export interface WebhookResponsePayload {
 }
 
 export interface ExecuteResult {
-  status: 'success' | 'error' | 'waiting' | 'cancelled';
+  status: "success" | "error" | "waiting" | "cancelled";
   error?: string;
   errorNodeId?: string;
   resumeAt?: Date;
@@ -51,7 +51,7 @@ export interface ExecuteResult {
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
+    signal?.addEventListener("abort", () => {
       clearTimeout(timer);
       resolve();
     });
@@ -59,7 +59,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
   if (Array.isArray(value)) return { items: value };
@@ -72,19 +72,26 @@ function makeConnectionResolver() {
   return async (id: string): Promise<Record<string, unknown>> => {
     const cached = cache.get(id);
     if (cached) return cached;
-    if (!Types.ObjectId.isValid(id)) throw new Error(`Invalid connection id "${id}"`);
+    if (!Types.ObjectId.isValid(id))
+      throw new Error(`Invalid connection id "${id}"`);
 
-    const connection = await Connection.findById(id).select('+data').lean();
-    if (!connection) throw new Error('The selected connection no longer exists');
+    const connection = await Connection.findById(id).select("+data").lean();
+    if (!connection)
+      throw new Error("The selected connection no longer exists");
 
-    const config = decryptJson<Record<string, unknown>>(connection.data as string);
+    const config = decryptJson<Record<string, unknown>>(
+      connection.data as string,
+    );
     cache.set(id, config);
     return config;
   };
 }
 
 /** Resolves node params, skipping properties flagged `resolveExpressions: false`. */
-function resolveParams(node: WorkflowNode, scope: ExpressionScope): Record<string, unknown> {
+function resolveParams(
+  node: WorkflowNode,
+  scope: ExpressionScope,
+): Record<string, unknown> {
   const definition = getNodeDefinition(node.type);
   const skip = new Set(
     (definition?.properties ?? [])
@@ -117,7 +124,10 @@ function toGraphNodes(nodes: WorkflowNode[]): GraphNode[] {
  * All graph walking lives in `graph.ts`; this function supplies the side effects —
  * expression resolution, credentials, retries and persistence.
  */
-export async function executeRun(runId: string, workerId = 'inline'): Promise<ExecuteResult> {
+export async function executeRun(
+  runId: string,
+  workerId = "inline",
+): Promise<ExecuteResult> {
   /*
    * Claim the run atomically.
    *
@@ -139,35 +149,38 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
         { lockedBy: workerId },
       ],
     },
-    { $set: { status: 'running', lockedBy: workerId, lockedAt: new Date() } },
+    { $set: { status: "running", lockedBy: workerId, lockedAt: new Date() } },
     { new: true },
-  ).select('+state');
+  ).select("+state");
 
   if (!claimed) {
     // Either the run already finished, or another worker holds it.
-    const existing = await Run.findById(runId).select('status error').lean();
-    if (!existing) return { status: 'error', error: 'Run not found' };
+    const existing = await Run.findById(runId).select("status error").lean();
+    if (!existing) return { status: "error", error: "Run not found" };
 
     if (isTerminalStatus(existing.status)) {
-      logger.debug({ runId, status: existing.status }, 'Run already finished — not re-running');
-      return existing.status === 'success'
-        ? { status: 'success' }
+      logger.debug(
+        { runId, status: existing.status },
+        "Run already finished — not re-running",
+      );
+      return existing.status === "success"
+        ? { status: "success" }
         : {
-            status: existing.status === 'cancelled' ? 'cancelled' : 'error',
+            status: existing.status === "cancelled" ? "cancelled" : "error",
             error: existing.error ?? undefined,
           };
     }
 
-    logger.warn({ runId }, 'Run is locked by another worker — skipping');
-    return { status: 'error', error: 'Run is already executing elsewhere' };
+    logger.warn({ runId }, "Run is locked by another worker — skipping");
+    return { status: "error", error: "Run is already executing elsewhere" };
   }
 
   const run = claimed;
 
   const workflow = await Workflow.findById(run.workflow).lean();
   if (!workflow) {
-    await finishRun(run, 'error', 'Workflow was deleted');
-    return { status: 'error', error: 'Workflow was deleted' };
+    await finishRun(run, "error", "Workflow was deleted");
+    return { status: "error", error: "Workflow was deleted" };
   }
 
   const workflowNodes = (workflow.nodes ?? []) as unknown as WorkflowNode[];
@@ -175,16 +188,20 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
   const nodeById = new Map(workflowNodes.map((node) => [node.id, node]));
 
   const controller = new AbortController();
-  const timeoutMs = Number(workflow.settings?.timeoutMs ?? env.engine.runTimeoutMs);
+  const timeoutMs = Number(
+    workflow.settings?.timeoutMs ?? env.engine.runTimeoutMs,
+  );
   const deadline = Date.now() + timeoutMs;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   const getConnection = makeConnectionResolver();
   const triggerPayload = asRecord(run.trigger?.payload ?? {});
   const variables = asRecord(workflow.variables ?? {});
-  const nodeNameToId = Object.fromEntries(workflowNodes.map((node) => [node.name, node.id]));
+  const nodeNameToId = Object.fromEntries(
+    workflowNodes.map((node) => [node.name, node.id]),
+  );
 
-  const savedState = run.get('state') as TraversalState | undefined;
+  const savedState = run.get("state") as TraversalState | undefined;
   /**
    * runGraph mutates this object in place, so the execute callback below always
    * sees the live node outputs when building expression scopes.
@@ -194,18 +211,18 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
   const logsByNode = new Map<string, string[]>();
   const triesByNode = new Map<string, number>();
 
-  run.set('status', 'running');
-  if (!run.startedAt) run.set('startedAt', new Date());
+  run.set("status", "running");
+  if (!run.startedAt) run.set("startedAt", new Date());
 
   // A fresh run records the trigger itself as step zero.
   if (!savedState) {
-    const triggerNode = nodeById.get(String(run.trigger?.nodeId ?? ''));
+    const triggerNode = nodeById.get(String(run.trigger?.nodeId ?? ""));
     if (triggerNode) {
       pushStep(run, {
         nodeId: triggerNode.id,
         nodeName: triggerNode.name,
         nodeType: triggerNode.type,
-        status: 'success',
+        status: "success",
         output: triggerPayload,
         startedAt: new Date(),
         finishedAt: new Date(),
@@ -244,15 +261,16 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
   const result = await runGraph({
     nodes: toGraphNodes(workflowNodes),
     edges: workflowEdges as GraphEdge[],
-    startNodeId: String(run.trigger?.nodeId ?? ''),
+    startNodeId: String(run.trigger?.nodeId ?? ""),
     startData: triggerPayload,
+    executeStartNode: Boolean(run.trigger?.executeStartNode),
     state: currentState,
     isCancelled: () => controller.signal.aborted || Date.now() > deadline,
     cancelMessage: `Run exceeded the ${timeoutMs}ms time limit`,
 
     async execute(graphNode, item) {
       const node = nodeById.get(graphNode.id);
-      if (!node) throw new Error('Step disappeared from the workflow mid-run');
+      if (!node) throw new Error("Step disappeared from the workflow mid-run");
 
       const definition = requireNodeDefinition(node.type);
       if (!definition.execute) {
@@ -260,7 +278,9 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
       }
 
       const logs: string[] = [];
-      const maxTries = node.retryOnFail ? Math.max(1, Number(node.maxTries ?? 3)) : 1;
+      const maxTries = node.retryOnFail
+        ? Math.max(1, Number(node.maxTries ?? 3))
+        : 1;
       let tries = 0;
       let lastError: unknown;
 
@@ -282,7 +302,8 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
             workflowId: String(workflow._id),
             getConnection,
             resolve: (value) => resolveValue(value, scope),
-            log: (message) => logs.push(`${new Date().toISOString()}  ${message}`),
+            log: (message) =>
+              logs.push(`${new Date().toISOString()}  ${message}`),
             signal: controller.signal,
           };
 
@@ -290,9 +311,11 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
           logsByNode.set(node.id, logs);
           triesByNode.set(node.id, tries);
 
-          if (outcome.kind === 'output') {
-            const response = (outcome.data as Record<string, unknown>).__webhookResponse;
-            if (response) webhookResponse = response as unknown as WebhookResponsePayload;
+          if (outcome.kind === "output") {
+            const response = (outcome.data as Record<string, unknown>)
+              .__webhookResponse;
+            if (response)
+              webhookResponse = response as unknown as WebhookResponsePayload;
           }
           return outcome as StepOutcome;
         } catch (error) {
@@ -301,14 +324,17 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
             logs.push(
               `${new Date().toISOString()}  Attempt ${tries} failed: ${toErrorMessage(error)} — retrying`,
             );
-            await sleep(Number(node.waitBetweenTriesMs ?? 1000), controller.signal);
+            await sleep(
+              Number(node.waitBetweenTriesMs ?? 1000),
+              controller.signal,
+            );
           }
         }
       }
 
       logsByNode.set(node.id, logs);
       triesByNode.set(node.id, tries);
-      throw lastError ?? new Error('Step returned no result');
+      throw lastError ?? new Error("Step returned no result");
     },
 
     async onStep(record) {
@@ -327,29 +353,32 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
        * Skipping this write is what caused duplicate webhooks and spreadsheet
        * rows after a container restart.
        */
-      run.set('state', currentState);
-      run.set('lockedAt', new Date());
+      run.set("state", currentState);
+      run.set("lockedAt", new Date());
 
       await run.save().catch((error) => {
-        logger.warn({ runId, err: toErrorMessage(error) }, 'Could not persist run progress');
+        logger.warn(
+          { runId, err: toErrorMessage(error) },
+          "Could not persist run progress",
+        );
       });
     },
   });
 
   clearTimeout(timer);
 
-  if (result.status === 'waiting') {
-    run.set('status', 'waiting');
-    run.set('state', result.state);
+  if (result.status === "waiting") {
+    run.set("status", "waiting");
+    run.set("state", result.state);
     // Release the lock — the resume may well happen in a different process.
-    run.set('lockedBy', undefined);
-    run.set('lockedAt', undefined);
+    run.set("lockedBy", undefined);
+    run.set("lockedAt", undefined);
     await run.save();
-    return { status: 'waiting', resumeAt: result.resumeAt, webhookResponse };
+    return { status: "waiting", resumeAt: result.resumeAt, webhookResponse };
   }
 
-  if (result.status === 'error') {
-    await finishRun(run, 'error', result.error);
+  if (result.status === "error") {
+    await finishRun(run, "error", result.error);
     await bumpStats(String(workflow._id), false);
 
     // Fire and forget — alerting must never delay or fail the run itself.
@@ -359,20 +388,20 @@ export async function executeRun(runId: string, workerId = 'inline'): Promise<Ex
       runId: String(run._id),
       error: result.error,
       errorNodeId: result.nodeId,
-      mode: String(run.mode ?? 'manual'),
+      mode: String(run.mode ?? "manual"),
     });
 
     return {
-      status: 'error',
+      status: "error",
       error: result.error,
       errorNodeId: result.nodeId,
       webhookResponse,
     };
   }
 
-  await finishRun(run, 'success');
+  await finishRun(run, "success");
   await bumpStats(String(workflow._id), true);
-  return { status: 'success', lastOutput: result.lastOutput, webhookResponse };
+  return { status: "success", lastOutput: result.lastOutput, webhookResponse };
 }
 
 /**
@@ -383,17 +412,24 @@ function pushStep(run: RunDoc, step: RunStepRecord): void {
   (run.steps as unknown as RunStepRecord[]).push(step);
 }
 
-async function finishRun(run: RunDoc, status: 'success' | 'error', error?: string): Promise<void> {
+async function finishRun(
+  run: RunDoc,
+  status: "success" | "error",
+  error?: string,
+): Promise<void> {
   const finishedAt = new Date();
-  run.set('status', status);
-  run.set('error', error);
-  run.set('finishedAt', finishedAt);
-  run.set('durationMs', run.startedAt ? finishedAt.getTime() - run.startedAt.getTime() : 0);
-  run.set('state', undefined);
+  run.set("status", status);
+  run.set("error", error);
+  run.set("finishedAt", finishedAt);
+  run.set(
+    "durationMs",
+    run.startedAt ? finishedAt.getTime() - run.startedAt.getTime() : 0,
+  );
+  run.set("state", undefined);
   // Release the lock so the terminal status is the only thing guarding re-entry.
-  run.set('lockedBy', undefined);
-  run.set('lockedAt', undefined);
-  run.set('expiresAt', runExpiryDate());
+  run.set("lockedBy", undefined);
+  run.set("lockedAt", undefined);
+  run.set("expiresAt", runExpiryDate());
   await run.save();
 }
 
@@ -401,8 +437,14 @@ async function bumpStats(workflowId: string, ok: boolean): Promise<void> {
   await Workflow.updateOne(
     { _id: workflowId },
     {
-      $inc: { 'stats.runs': 1, ...(ok ? { 'stats.success': 1 } : { 'stats.errors': 1 }) },
-      $set: { 'stats.lastRunAt': new Date(), 'stats.lastRunStatus': ok ? 'success' : 'error' },
+      $inc: {
+        "stats.runs": 1,
+        ...(ok ? { "stats.success": 1 } : { "stats.errors": 1 }),
+      },
+      $set: {
+        "stats.lastRunAt": new Date(),
+        "stats.lastRunStatus": ok ? "success" : "error",
+      },
     },
   ).catch(() => undefined);
 }

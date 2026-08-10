@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { Activity, RefreshCw } from 'lucide-react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Link, useNavigate } from 'react-router-dom';
+import { Activity, RefreshCw, RotateCcw } from 'lucide-react';
+import { toast } from 'sonner';
 import PageHeader from '@/components/PageHeader';
 import { EmptyState, Spinner, StatusBadge } from '@/components/ui';
-import { api } from '@/lib/api';
+import { api, errorMessage } from '@/lib/api';
 import type { Run, Workflow } from '@/lib/types';
 import { formatDateTime, formatDuration } from '@/lib/utils';
 
 const STATUSES = ['', 'success', 'error', 'running', 'queued', 'waiting', 'cancelled'];
 
 export default function Runs() {
+  const navigate = useNavigate();
   const [status, setStatus] = useState('');
   const [workflow, setWorkflow] = useState('');
   const [page, setPage] = useState(1);
@@ -18,6 +20,20 @@ export default function Runs() {
   const workflows = useQuery({
     queryKey: ['workflows', 'all'],
     queryFn: async () => (await api.get<{ workflows: Workflow[] }>('/workflows')).data.workflows,
+  });
+
+  const retry = useMutation({
+    mutationFn: async (runId: string) =>
+      (
+        await api.post<{ runId: string; startedFrom?: string; note?: string }>(
+          `/runs/${runId}/retry`,
+        )
+      ).data,
+    onSuccess: (data) => {
+      toast.success(data.note ?? 'Started again with the same data');
+      navigate(`/runs/${data.runId}`);
+    },
+    onError: (error) => toast.error(errorMessage(error, 'Could not run that again')),
   });
 
   const runs = useQuery({
@@ -108,13 +124,24 @@ export default function Runs() {
                       <td className="px-4 py-3 capitalize text-slate-600">{run.mode}</td>
                       <td className="px-4 py-3 text-slate-500">{formatDateTime(run.createdAt)}</td>
                       <td className="px-4 py-3 text-slate-500">{formatDuration(run.durationMs)}</td>
-                      <td className="px-4 py-3 text-right">
-                        <Link
-                          to={`/runs/${run._id}`}
-                          className="text-xs font-medium text-brand-600 hover:underline"
-                        >
-                          Details
-                        </Link>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            className="btn-ghost btn-sm"
+                            title="Run this again with the same data"
+                            disabled={retry.isPending}
+                            onClick={() => retry.mutate(run._id)}
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            Run again
+                          </button>
+                          <Link
+                            to={`/runs/${run._id}`}
+                            className="text-xs font-medium text-brand-600 hover:underline"
+                          >
+                            Details
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   ))}
