@@ -24,6 +24,17 @@ export const GOOGLE_SHEETS_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
 ];
 
+/**
+ * Everything the app can do with a Google account, requested together at
+ * consent time so one connection covers both Sheets and email — nobody enjoys
+ * re-authorising because a second feature needed another permission.
+ */
+export const GOOGLE_ALL_SCOPES = [
+  ...GOOGLE_SHEETS_SCOPES,
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/userinfo.email',
+];
+
 interface CachedToken {
   token: string;
   expiresAt: number;
@@ -35,10 +46,11 @@ function base64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64url');
 }
 
-function cacheKey(credential: Record<string, unknown>): string {
-  return String(
-    credential.clientEmail ?? credential.client_email ?? credential.refreshToken ?? 'google',
-  );
+/** Scopes are part of the key: a Sheets token cannot be reused for Gmail. */
+function cacheKey(credential: Record<string, unknown>, scopes: string[]): string {
+  const identity =
+    credential.clientEmail ?? credential.client_email ?? credential.refreshToken ?? 'google';
+  return `${String(identity)}::${credential.impersonateUser ?? ''}::${scopes.join(',')}`;
 }
 
 /** Normalises a service-account key whether it was pasted whole or field by field. */
@@ -142,7 +154,7 @@ export async function getGoogleAccessToken(
   credential: Record<string, any>,
   scopes: string[] = GOOGLE_SHEETS_SCOPES,
 ): Promise<string> {
-  const key = cacheKey(credential);
+  const key = cacheKey(credential, scopes);
   const cached = tokenCache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.token;
 
@@ -178,7 +190,7 @@ export function buildGoogleAuthUrl(options: {
     client_id: options.clientId,
     redirect_uri: options.redirectUri,
     response_type: 'code',
-    scope: (options.scopes ?? GOOGLE_SHEETS_SCOPES).join(' '),
+    scope: (options.scopes ?? GOOGLE_ALL_SCOPES).join(' '),
     // Both are required for Google to hand back a refresh token.
     access_type: 'offline',
     prompt: 'consent',

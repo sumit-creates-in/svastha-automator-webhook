@@ -98,6 +98,8 @@ export interface WorkflowNodeData {
   retryOnFail?: boolean;
   maxTries?: number;
   waitBetweenTriesMs?: number;
+  /** Per-step ceiling in milliseconds; blank uses the engine default. */
+  timeoutMs?: number;
 }
 
 export interface WorkflowEdgeData {

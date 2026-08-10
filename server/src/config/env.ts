@@ -68,6 +68,12 @@ export const env = {
     pollIntervalMs: num('ENGINE_POLL_INTERVAL_MS', 1000),
     /** Hard ceiling for a single workflow run (ms). */
     runTimeoutMs: num('ENGINE_RUN_TIMEOUT_MS', 5 * 60 * 1000),
+    /**
+     * Hard ceiling for a single step (ms). Guarantees a run can never be frozen
+     * by one integration that fails to return — a blocked SMTP port being the
+     * usual culprit.
+     */
+    stepTimeoutMs: num('ENGINE_STEP_TIMEOUT_MS', 90 * 1000),
     /** Timeout applied to each Code node execution (ms). */
     codeTimeoutMs: num('ENGINE_CODE_TIMEOUT_MS', 5000),
     /** Longest a job may be locked before it is considered stalled and reclaimed (ms). */

@@ -18,6 +18,8 @@ const nodeSchema = new Schema(
     retryOnFail: { type: Boolean, default: false },
     maxTries: { type: Number, default: 3 },
     waitBetweenTriesMs: { type: Number, default: 1000 },
+    /** Per-step ceiling; blank uses the engine default. */
+    timeoutMs: { type: Number },
   },
   { _id: false },
 );

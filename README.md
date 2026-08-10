@@ -21,13 +21,14 @@ Built with **MongoDB, Express, React and Node.js — all in TypeScript**. It dep
 | Step | Use it for |
 | --- | --- |
 | **HTTP Request / Send Webhook** | Call any URL. JSON, form or raw bodies, custom headers and query params, saved auth credentials, retries. |
-| **Send Email** | Any SMTP server (Hostinger, Gmail, Zoho, SES, Brevo…). HTML and/or plain text, CC/BCC, reply-to, attachments by URL. |
+| **Send Email** | The **Gmail API** over HTTPS (recommended — no password stored, and unaffected by hosts that block SMTP ports), or any SMTP server. HTML and/or plain text, CC/BCC, reply-to, attachments by URL. See [EMAIL-SETUP.md](docs/EMAIL-SETUP.md). |
 | **Google Sheets** | Add, read, update or clear rows. Matches your data to column titles, so nobody touches a cell reference. |
-| **Edit Fields** | Rename, add, remove and re-type fields before passing data on. No code needed. |
+| **Edit Fields** | Rename, add, remove, clean and re-type fields before passing data on. 35+ formatting operations — trim, strip HTML, truncate, currency, phone, slug — with no code. |
 | **Calculate** | Add, subtract, multiply, divide, percentages, running chains, and totals from a list. |
+| **Date & Time** | Format a date and time into one string, add or subtract time, compare two dates, start/end of day. Timezone-aware. |
 | **Code (JavaScript)** | A sandboxed JS step for anything the other nodes can't express. |
-| **If / Else** | Two output paths — true and false — with 18 comparison operators. |
-| **Filter** | A gate: stop this branch unless the conditions match. |
+| **If / Else** | Two output paths — true and false — with 40 comparison operators covering text, numbers, dates, formats and lists. |
+| **Filter** | A gate: stop this branch unless the conditions match. Every check is logged with a PASS/FAIL line. |
 | **Loop Over Items** | Run a branch once per element of a list — order line items, spreadsheet rows — then continue on `Finished`. |
 | **Merge Branches** | Wait for two parallel branches and join them back into one. |
 | **Wait** | Pause for a duration or until a specific time. Long waits are persisted, so a redeploy doesn't lose the run. |
@@ -154,6 +155,10 @@ Helpers include `upper lower trim title slug number round json parseJson first l
 | `{{ $fn.phone($json.mobile) }}` | `919876543210` — adds the country code, strips spaces, `+`, dashes and leading zeros |
 | `{{ $fn.time($json.created_at) }}` | `2:50 pm` |
 | `{{ $fn.date($json.created_at) }}` | `07 Aug 2026` |
+| `{{ $fn.format($json.at, 'DD MMM YYYY, h:mm a') }}` | `07 Aug 2026, 2:20 pm` |
+| `{{ $fn.dateAdd($json.at, 3, 'days') }}` | Shift a date |
+| `{{ $fn.ago($json.at) }}` | `3 days ago` |
+| `{{ $fn.stripHtml($json.message) }}` | Plain text from a rich-text field |
 | `{{ $fn.text($json.value) }}` | Stops Google Sheets reinterpreting the value |
 
 **Arithmetic** — `$fn.add $fn.sub $fn.mul $fn.div $fn.percentOf $fn.addPercent $fn.sum $fn.avg $fn.min $fn.max $fn.money`. For anything more than one operation, use the **Calculate** step.
@@ -171,6 +176,8 @@ Runs execute **exactly once**, which matters on platforms that restart container
 - A failed workflow is a finished job — it is never retried as a whole. Retries belong to individual steps (`retryOnFail`).
 - Shutdown hands in-flight jobs straight back to the queue.
 - The Webhook trigger can ignore repeat deliveries from senders that retry.
+- **Every step has a hard time limit** (90s default, adjustable per step), so one unresponsive integration can never leave a run stuck at "Running".
+- Runs orphaned by a crash are closed off automatically with an explanation.
 
 ---
 

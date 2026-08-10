@@ -6,31 +6,31 @@
  * hand-rolled offset arithmetic, and lighter than pulling in a date library.
  */
 
-export const DEFAULT_TIMEZONE = "Asia/Kolkata";
+export const DEFAULT_TIMEZONE = 'Asia/Kolkata';
 
 const MONTHS_LONG = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
 ];
 
 const DAYS_LONG = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
 ];
 
 /**
@@ -39,11 +39,10 @@ const DAYS_LONG = [
  * than an Invalid Date so callers can decide what to do.
  */
 export function parseDate(value: unknown): Date | null {
-  if (value instanceof Date)
-    return Number.isNaN(value.getTime()) ? null : value;
-  if (value === null || value === undefined || value === "") return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === null || value === undefined || value === '') return null;
 
-  if (typeof value === "number") {
+  if (typeof value === 'number') {
     // Ten-digit values are epoch seconds; anything longer is milliseconds.
     const ms = value < 1e11 ? value * 1000 : value;
     const date = new Date(ms);
@@ -56,11 +55,9 @@ export function parseDate(value: unknown): Date | null {
   if (/^\d+$/.test(text)) return parseDate(Number(text));
 
   // DD/MM/YYYY or DD-MM-YYYY, which JavaScript otherwise reads as US order.
-  const dmy = text.match(
-    /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/,
-  );
+  const dmy = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
   if (dmy) {
-    const [, day, month, year, hour = "0", minute = "0", second = "0"] = dmy;
+    const [, day, month, year, hour = '0', minute = '0', second = '0'] = dmy;
     const date = new Date(
       Date.UTC(
         Number(year),
@@ -93,31 +90,31 @@ interface DateParts {
 export function getParts(date: Date, timezone = DEFAULT_TIMEZONE): DateParts {
   let formatter: Intl.DateTimeFormat;
   try {
-    formatter = new Intl.DateTimeFormat("en-US", {
+    formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      weekday: "short",
-      hourCycle: "h23",
-      timeZoneName: "shortOffset",
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      weekday: 'short',
+      hourCycle: 'h23',
+      timeZoneName: 'shortOffset',
     });
   } catch {
     // An unknown timezone should degrade to UTC, not crash a workflow.
-    formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: "UTC",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      weekday: "short",
-      hourCycle: "h23",
-      timeZoneName: "shortOffset",
+    formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'UTC',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      weekday: 'short',
+      hourCycle: 'h23',
+      timeZoneName: 'shortOffset',
     });
   }
 
@@ -132,10 +129,8 @@ export function getParts(date: Date, timezone = DEFAULT_TIMEZONE): DateParts {
     hour: Number(parts.hour),
     minute: Number(parts.minute),
     second: Number(parts.second),
-    weekday: DAYS_LONG.findIndex((name) =>
-      name.startsWith(parts.weekday ?? ""),
-    ),
-    offsetLabel: (parts.timeZoneName ?? "UTC").replace("GMT", "UTC"),
+    weekday: DAYS_LONG.findIndex((name) => name.startsWith(parts.weekday ?? '')),
+    offsetLabel: (parts.timeZoneName ?? 'UTC').replace('GMT', 'UTC'),
   };
 }
 
@@ -181,35 +176,35 @@ function ordinal(day: number): string {
  */
 export function formatDateTime(
   value: unknown,
-  pattern = "DD MMM YYYY, h:mm a",
+  pattern = 'DD MMM YYYY, h:mm a',
   timezone = DEFAULT_TIMEZONE,
 ): string {
   const date = parseDate(value);
-  if (!date) return "";
+  if (!date) return '';
 
   const parts = getParts(date, timezone);
   const hour12 = parts.hour % 12 === 0 ? 12 : parts.hour % 12;
-  const meridiem = parts.hour < 12 ? "am" : "pm";
+  const meridiem = parts.hour < 12 ? 'am' : 'pm';
 
   const tokens: Record<string, string> = {
     YYYY: String(parts.year),
     YY: String(parts.year).slice(-2),
-    MMMM: MONTHS_LONG[parts.month - 1] ?? "",
-    MMM: (MONTHS_LONG[parts.month - 1] ?? "").slice(0, 3),
-    MM: String(parts.month).padStart(2, "0"),
+    MMMM: MONTHS_LONG[parts.month - 1] ?? '',
+    MMM: (MONTHS_LONG[parts.month - 1] ?? '').slice(0, 3),
+    MM: String(parts.month).padStart(2, '0'),
     M: String(parts.month),
-    DD: String(parts.day).padStart(2, "0"),
+    DD: String(parts.day).padStart(2, '0'),
     Do: ordinal(parts.day),
     D: String(parts.day),
-    dddd: DAYS_LONG[parts.weekday] ?? "",
-    ddd: (DAYS_LONG[parts.weekday] ?? "").slice(0, 3),
-    HH: String(parts.hour).padStart(2, "0"),
+    dddd: DAYS_LONG[parts.weekday] ?? '',
+    ddd: (DAYS_LONG[parts.weekday] ?? '').slice(0, 3),
+    HH: String(parts.hour).padStart(2, '0'),
     H: String(parts.hour),
-    hh: String(hour12).padStart(2, "0"),
+    hh: String(hour12).padStart(2, '0'),
     h: String(hour12),
-    mm: String(parts.minute).padStart(2, "0"),
+    mm: String(parts.minute).padStart(2, '0'),
     m: String(parts.minute),
-    ss: String(parts.second).padStart(2, "0"),
+    ss: String(parts.second).padStart(2, '0'),
     s: String(parts.second),
     A: meridiem.toUpperCase(),
     a: meridiem,
@@ -217,8 +212,7 @@ export function formatDateTime(
   };
 
   // Longest tokens first so MMMM is not eaten by MMM.
-  const pattern_ =
-    /\[([^\]]*)]|YYYY|MMMM|dddd|MMM|ddd|YY|MM|DD|Do|HH|hh|mm|ss|M|D|H|h|m|s|A|a|Z/g;
+  const pattern_ = /\[([^\]]*)]|YYYY|MMMM|dddd|MMM|ddd|YY|MM|DD|Do|HH|hh|mm|ss|M|D|H|h|m|s|A|a|Z/g;
 
   return pattern.replace(pattern_, (match, literal?: string) => {
     if (literal !== undefined) return literal;
@@ -226,14 +220,7 @@ export function formatDateTime(
   });
 }
 
-export type DateUnit =
-  | "seconds"
-  | "minutes"
-  | "hours"
-  | "days"
-  | "weeks"
-  | "months"
-  | "years";
+export type DateUnit = 'seconds' | 'minutes' | 'hours' | 'days' | 'weeks' | 'months' | 'years';
 
 const UNIT_MS: Record<string, number> = {
   seconds: 1000,
@@ -244,23 +231,15 @@ const UNIT_MS: Record<string, number> = {
 };
 
 /** Adds (or with a negative amount, subtracts) a period. */
-export function addToDate(
-  value: unknown,
-  amount: number,
-  unit: DateUnit,
-): Date | null {
+export function addToDate(value: unknown, amount: number, unit: DateUnit): Date | null {
   const date = parseDate(value);
   if (!date) return null;
 
-  if (unit === "months" || unit === "years") {
+  if (unit === 'months' || unit === 'years') {
     // Calendar arithmetic, so 31 Jan + 1 month lands on 28/29 Feb rather than in March.
     const result = new Date(date.getTime());
-    const target =
-      unit === "years"
-        ? result.getUTCFullYear() + amount
-        : result.getUTCFullYear();
-    const month =
-      unit === "months" ? result.getUTCMonth() + amount : result.getUTCMonth();
+    const target = unit === 'years' ? result.getUTCFullYear() + amount : result.getUTCFullYear();
+    const month = unit === 'months' ? result.getUTCMonth() + amount : result.getUTCMonth();
     const day = result.getUTCDate();
 
     result.setUTCFullYear(target, month, 1);
@@ -275,19 +254,15 @@ export function addToDate(
 }
 
 /** Difference between two instants, expressed in `unit`. */
-export function diffDates(
-  from: unknown,
-  to: unknown,
-  unit: DateUnit = "days",
-): number {
+export function diffDates(from: unknown, to: unknown, unit: DateUnit = 'days'): number {
   const a = parseDate(from);
   const b = parseDate(to);
   if (!a || !b) return 0;
 
   const ms = b.getTime() - a.getTime();
 
-  if (unit === "years") return ms / (365.25 * UNIT_MS.days);
-  if (unit === "months") return ms / (30.44 * UNIT_MS.days);
+  if (unit === 'years') return ms / (365.25 * UNIT_MS.days);
+  if (unit === 'months') return ms / (30.44 * UNIT_MS.days);
   return ms / (UNIT_MS[unit] ?? UNIT_MS.days);
 }
 
@@ -321,10 +296,7 @@ export function zonedTimeToUtc(
 }
 
 /** Midnight at the start of the day, as seen in `timezone`. */
-export function startOfDay(
-  value: unknown,
-  timezone = DEFAULT_TIMEZONE,
-): Date | null {
+export function startOfDay(value: unknown, timezone = DEFAULT_TIMEZONE): Date | null {
   const date = parseDate(value);
   if (!date) return null;
   const parts = getParts(date, timezone);
@@ -332,30 +304,15 @@ export function startOfDay(
 }
 
 /** The last second of the day, as seen in `timezone`. */
-export function endOfDay(
-  value: unknown,
-  timezone = DEFAULT_TIMEZONE,
-): Date | null {
+export function endOfDay(value: unknown, timezone = DEFAULT_TIMEZONE): Date | null {
   const date = parseDate(value);
   if (!date) return null;
   const parts = getParts(date, timezone);
-  return zonedTimeToUtc(
-    parts.year,
-    parts.month,
-    parts.day,
-    23,
-    59,
-    59,
-    timezone,
-  );
+  return zonedTimeToUtc(parts.year, parts.month, parts.day, 23, 59, 59, timezone);
 }
 
 /** True when both instants fall on the same calendar day in `timezone`. */
-export function isSameDay(
-  a: unknown,
-  b: unknown,
-  timezone = DEFAULT_TIMEZONE,
-): boolean {
+export function isSameDay(a: unknown, b: unknown, timezone = DEFAULT_TIMEZONE): boolean {
   const first = parseDate(a);
   const second = parseDate(b);
   if (!first || !second) return false;
@@ -368,20 +325,20 @@ export function isSameDay(
 /** "3 days ago", "in 2 hours". */
 export function relativeToNow(value: unknown, now = new Date()): string {
   const date = parseDate(value);
-  if (!date) return "";
+  if (!date) return '';
 
   const seconds = (date.getTime() - now.getTime()) / 1000;
   const future = seconds > 0;
   const magnitude = Math.abs(seconds);
 
   const steps: Array<[number, string]> = [
-    [60, "second"],
-    [3600, "minute"],
-    [86400, "hour"],
-    [604800, "day"],
-    [2629800, "week"],
-    [31557600, "month"],
-    [Infinity, "year"],
+    [60, 'second'],
+    [3600, 'minute'],
+    [86400, 'hour'],
+    [604800, 'day'],
+    [2629800, 'week'],
+    [31557600, 'month'],
+    [Infinity, 'year'],
   ];
 
   const divisors: Record<string, number> = {
@@ -394,7 +351,7 @@ export function relativeToNow(value: unknown, now = new Date()): string {
     year: 31557600,
   };
 
-  const unit = steps.find(([limit]) => magnitude < limit)?.[1] ?? "year";
+  const unit = steps.find(([limit]) => magnitude < limit)?.[1] ?? 'year';
   const count = Math.max(1, Math.round(magnitude / divisors[unit]));
   const plural = count === 1 ? unit : `${unit}s`;
 

@@ -207,6 +207,27 @@ export default function NodeConfigPanel({
               />
             </div>
 
+            <Field
+              label="Give up after (seconds)"
+              hint="A safety net. If this step has not finished by then it fails with an explanation, instead of leaving the run stuck. Blank uses the default of 90 seconds."
+            >
+              <input
+                type="number"
+                min={5}
+                max={900}
+                className="input"
+                placeholder="90"
+                value={node.timeoutMs ? Math.round(node.timeoutMs / 1000) : ''}
+                onChange={(event) =>
+                  onChange({
+                    timeoutMs: event.target.value
+                      ? Math.max(5, Number(event.target.value)) * 1000
+                      : undefined,
+                  })
+                }
+              />
+            </Field>
+
             {node.retryOnFail ? (
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Max attempts">

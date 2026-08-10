@@ -1,5 +1,13 @@
 import nodemailer, { type Transporter } from 'nodemailer';
+import { sendViaGmailApi } from '../../lib/gmail';
 import type { NodeDefinition } from '../types';
+
+/** A Google connection sends through the Gmail API rather than SMTP. */
+export function isGoogleCredential(credential: Record<string, unknown>): boolean {
+  return Boolean(
+    credential.refreshToken || credential.serviceAccountJson || credential.privateKey,
+  );
+}
 
 const transporterCache = new Map<string, Transporter>();
 
@@ -20,6 +28,18 @@ export function getTransporter(config: Record<string, any>): Transporter {
     tls: { rejectUnauthorized: config.rejectUnauthorized !== false },
     pool: true,
     maxConnections: 3,
+
+    /*
+     * Timeouts are not optional here.
+     *
+     * Many hosts silently drop outbound traffic on ports 25/465/587 — the packet
+     * disappears rather than being refused, so there is no connection error to
+     * react to. Without these limits nodemailer waits indefinitely, the step
+     * never returns, and the run sits at "Running" forever with no email sent.
+     */
+    connectionTimeout: Number(config.connectionTimeoutMs ?? 20_000),
+    greetingTimeout: Number(config.greetingTimeoutMs ?? 20_000),
+    socketTimeout: Number(config.socketTimeoutMs ?? 45_000),
   });
 
   transporterCache.set(key, transporter);
@@ -53,11 +73,12 @@ export const sendEmail: NodeDefinition = {
   properties: [
     {
       name: 'connection',
-      label: 'SMTP connection',
+      label: 'Send using',
       type: 'connection',
-      connectionType: 'smtp',
+      connectionType: 'smtp,googleOAuth2,googleServiceAccount',
       required: true,
-      description: 'Create these under Connections. Credentials are stored encrypted.',
+      description:
+        'An SMTP server, or a Google connection to send through the Gmail API. Gmail is the more reliable choice — it uses ordinary HTTPS, so it keeps working when a host blocks outbound SMTP ports.',
     },
     { name: 'to', label: 'To', type: 'string', required: true, placeholder: '{{ $json.email }}' },
     { name: 'cc', label: 'CC', type: 'string' },
@@ -124,13 +145,15 @@ export const sendEmail: NodeDefinition = {
 
   async execute(ctx) {
     const params = ctx.params as Record<string, any>;
-    if (!params.connection) throw new Error('Select an SMTP connection');
+    if (!params.connection) throw new Error('Choose how this email should be sent');
 
     const credential = await ctx.getConnection(String(params.connection));
-    const transporter = getTransporter(credential);
+    const usesGmail = isGoogleCredential(credential);
 
-    const fromEmail = params.fromEmail || credential.fromEmail;
-    if (!fromEmail) throw new Error('No from address configured on the connection or the node');
+    const fromEmail = params.fromEmail || credential.fromEmail || credential.sendAsEmail;
+    if (!fromEmail && !usesGmail) {
+      throw new Error('No from address configured on the connection or the step');
+    }
     const fromName = params.fromName || credential.fromName;
 
     const to = splitAddresses(params.to);
@@ -143,8 +166,12 @@ export const sendEmail: NodeDefinition = {
           .map((a) => ({ filename: a.filename || undefined, path: a.url as string }))
       : [];
 
-    const info = await transporter.sendMail({
-      from: fromName ? `"${String(fromName).replace(/"/g, '')}" <${fromEmail}>` : String(fromEmail),
+    const message = {
+      from: fromEmail
+        ? fromName
+          ? `"${String(fromName).replace(/"/g, '')}" <${fromEmail}>`
+          : String(fromEmail)
+        : undefined,
       to,
       cc: splitAddresses(params.cc),
       bcc: splitAddresses(params.bcc),
@@ -153,14 +180,37 @@ export const sendEmail: NodeDefinition = {
       html: format === 'html' || format === 'both' ? String(params.html ?? '') : undefined,
       text: format === 'text' || format === 'both' ? String(params.text ?? '') : undefined,
       attachments,
-    });
+    };
 
-    ctx.log(`Email sent to ${to.join(', ')} (${info.messageId})`);
+    if (usesGmail) {
+      const result = await sendViaGmailApi(credential, message, ctx.signal);
+      ctx.log(`Sent via the Gmail API to ${to.join(', ')} (${result.messageId})`);
+
+      return {
+        kind: 'output',
+        data: {
+          sent: true,
+          transport: 'gmail',
+          messageId: result.messageId,
+          threadId: result.threadId,
+          accepted: result.accepted,
+          rejected: [],
+        },
+      };
+    }
+
+    const info = await getTransporter(credential).sendMail(message);
+    ctx.log(`Sent via SMTP to ${to.join(', ')} (${info.messageId})`);
+
+    if (info.rejected?.length) {
+      ctx.log(`Rejected: ${info.rejected.map(String).join(', ')}`);
+    }
 
     return {
       kind: 'output',
       data: {
         sent: true,
+        transport: 'smtp',
         messageId: info.messageId,
         accepted: info.accepted,
         rejected: info.rejected,

@@ -1,27 +1,11 @@
-import {
-  Schema,
-  model,
-  type InferSchemaType,
-  type HydratedDocument,
-} from "mongoose";
-import { env } from "../config/env";
+import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
+import { env } from '../config/env';
 
-export const RUN_STATUSES = [
-  "queued",
-  "running",
-  "waiting",
-  "success",
-  "error",
-  "cancelled",
-] as const;
+export const RUN_STATUSES = ['queued', 'running', 'waiting', 'success', 'error', 'cancelled'] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
 /** Once a run reaches one of these it must never execute again. */
-export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = [
-  "success",
-  "error",
-  "cancelled",
-];
+export const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ['success', 'error', 'cancelled'];
 
 export function isTerminalStatus(status: unknown): boolean {
   return TERMINAL_RUN_STATUSES.includes(status as RunStatus);
@@ -32,10 +16,7 @@ const stepSchema = new Schema(
     nodeId: String,
     nodeName: String,
     nodeType: String,
-    status: {
-      type: String,
-      enum: ["success", "error", "skipped", "stopped", "waiting"],
-    },
+    status: { type: String, enum: ['success', 'error', 'skipped', 'stopped', 'waiting'] },
     input: Schema.Types.Mixed,
     output: Schema.Types.Mixed,
     error: String,
@@ -50,24 +31,10 @@ const stepSchema = new Schema(
 
 const runSchema = new Schema(
   {
-    workflow: {
-      type: Schema.Types.ObjectId,
-      ref: "Workflow",
-      required: true,
-      index: true,
-    },
+    workflow: { type: Schema.Types.ObjectId, ref: 'Workflow', required: true, index: true },
     workflowName: String,
-    status: {
-      type: String,
-      enum: RUN_STATUSES,
-      default: "queued",
-      index: true,
-    },
-    mode: {
-      type: String,
-      enum: ["webhook", "schedule", "manual", "test"],
-      default: "manual",
-    },
+    status: { type: String, enum: RUN_STATUSES, default: 'queued', index: true },
+    mode: { type: String, enum: ['webhook', 'schedule', 'manual', 'test'], default: 'manual' },
     trigger: {
       nodeId: String,
       nodeName: String,
@@ -92,7 +59,7 @@ const runSchema = new Schema(
     startedAt: Date,
     finishedAt: Date,
     durationMs: Number,
-    startedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    startedBy: { type: Schema.Types.ObjectId, ref: 'User' },
     /**
      * Fingerprint of the incoming payload, used to ignore repeat deliveries from
      * senders that retry when they don't get a fast enough reply.
@@ -109,7 +76,7 @@ runSchema.index({ workflow: 1, createdAt: -1 });
 // TTL cleanup of old run history (expiresAt is set when a run finishes).
 runSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
-runSchema.set("toJSON", {
+runSchema.set('toJSON', {
   virtuals: true,
   transform: (_doc, ret: Record<string, unknown>) => {
     delete ret.__v;
@@ -126,4 +93,4 @@ export function runExpiryDate(): Date | undefined {
 export type RunAttrs = InferSchemaType<typeof runSchema>;
 export type RunDoc = HydratedDocument<RunAttrs>;
 
-export const Run = model("Run", runSchema);
+export const Run = model('Run', runSchema);

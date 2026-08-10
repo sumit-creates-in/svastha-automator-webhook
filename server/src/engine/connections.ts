@@ -129,6 +129,15 @@ export const connectionDefinitions: ConnectionDefinition[] = [
         type: 'string',
         description: 'Share your spreadsheets with this address.',
       },
+      {
+        name: 'impersonateUser',
+        label: 'Send email as (optional)',
+        type: 'string',
+        placeholder: 'support@yourdomain.com',
+        description:
+          'Only needed for sending email. Requires domain-wide delegation on the service account, granting the gmail.send scope in the Workspace admin console.',
+      },
+      { name: 'fromName', label: 'Sender name', type: 'string', placeholder: 'Svastha' },
     ],
   },
   {
@@ -156,6 +165,15 @@ export const connectionDefinitions: ConnectionDefinition[] = [
           'Filled in automatically after you save and click "Connect with Google". Leave blank.',
       },
       { name: 'account', label: 'Connected account', type: 'string' },
+      {
+        name: 'fromEmail',
+        label: 'Send emails from',
+        type: 'string',
+        placeholder: 'support@yourdomain.com',
+        description:
+          'Used by the Send Email step. Must be the connected account, or an address it is allowed to send as.',
+      },
+      { name: 'fromName', label: 'Sender name', type: 'string', placeholder: 'Svastha' },
     ],
   },
   {

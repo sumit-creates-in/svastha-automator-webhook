@@ -28,9 +28,9 @@ function FlowNodeComponent({ id, data, selected }: NodeProps) {
     definition?.inputHandles ??
     (inputCount > 1
       ? Array.from({ length: inputCount }, (_, index) => ({
-        name: `input${index + 1}`,
-        label: `Input ${index + 1}`,
-      }))
+          name: `input${index + 1}`,
+          label: `Input ${index + 1}`,
+        }))
       : []);
 
   /*
