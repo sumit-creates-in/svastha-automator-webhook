@@ -1,21 +1,24 @@
-import crypto from 'node:crypto';
-import { Router } from 'express';
-import { z } from 'zod';
-import { env } from '../config/env';
-import { getConnectionDefinition } from '../engine/connections';
-import { getTransporter } from '../engine/nodes/sendEmail';
-import { decryptJson, encryptJson } from '../lib/crypto';
-import { AppError, asyncHandler, toErrorMessage } from '../lib/errors';
+import crypto from "node:crypto";
+import { Router } from "express";
+import { z } from "zod";
+import { env } from "../config/env";
+import { getConnectionDefinition } from "../engine/connections";
+import {
+  clearTransporterCache,
+  getTransporter,
+} from "../engine/nodes/sendEmail";
+import { decryptJson, encryptJson } from "../lib/crypto";
+import { AppError, asyncHandler, toErrorMessage } from "../lib/errors";
 import {
   buildGoogleAuthUrl,
   describeGoogleError,
   exchangeGoogleCode,
   getGoogleAccessToken,
   readServiceAccount,
-} from '../lib/google';
-import { verifyGmailAccess } from '../lib/gmail';
-import { requireAuth } from '../middleware/auth';
-import { Connection } from '../models/Connection';
+} from "../lib/google";
+import { verifyGmailAccess } from "../lib/gmail";
+import { requireAuth } from "../middleware/auth";
+import { Connection } from "../models/Connection";
 
 export function googleRedirectUri(): string {
   return `${env.appUrl}/api/connections/oauth/google/callback`;
@@ -27,11 +30,17 @@ export function googleRedirectUri(): string {
  * Kept in memory deliberately: they live for five minutes and losing them on a
  * redeploy simply means the user clicks Connect again.
  */
-const oauthStates = new Map<string, { connectionId: string; expiresAt: number }>();
+const oauthStates = new Map<
+  string,
+  { connectionId: string; expiresAt: number }
+>();
 
 function issueOAuthState(connectionId: string): string {
-  const token = crypto.randomBytes(24).toString('base64url');
-  oauthStates.set(token, { connectionId, expiresAt: Date.now() + 5 * 60 * 1000 });
+  const token = crypto.randomBytes(24).toString("base64url");
+  oauthStates.set(token, {
+    connectionId,
+    expiresAt: Date.now() + 5 * 60 * 1000,
+  });
 
   for (const [key, value] of oauthStates) {
     if (value.expiresAt < Date.now()) oauthStates.delete(key);
@@ -49,7 +58,7 @@ function consumeOAuthState(token: string): { connectionId: string } | null {
 
 const router = Router();
 
-const MASK = '••••••••';
+const MASK = "••••••••";
 
 /**
  * Google OAuth callback.
@@ -59,16 +68,20 @@ const MASK = '••••••••';
  * authenticated /start route, so this endpoint cannot be driven by a stranger.
  */
 router.get(
-  '/oauth/google/callback',
+  "/oauth/google/callback",
   asyncHandler(async (req, res) => {
-    const { code, state, error: oauthError } = req.query as Record<string, string | undefined>;
+    const {
+      code,
+      state,
+      error: oauthError,
+    } = req.query as Record<string, string | undefined>;
 
     const close = (title: string, message: string, ok = false) => {
-      res.type('html').send(`<!doctype html><meta charset="utf-8">
+      res.type("html").send(`<!doctype html><meta charset="utf-8">
 <title>${title}</title>
 <body style="font-family:system-ui;margin:0;display:grid;place-items:center;height:100vh;background:#f8fafc;color:#0f172a">
   <div style="text-align:center;max-width:420px;padding:32px">
-    <div style="font-size:44px">${ok ? '&#10003;' : '&#9888;'}</div>
+    <div style="font-size:44px">${ok ? "&#10003;" : "&#9888;"}</div>
     <h1 style="font-size:18px;margin:12px 0 6px">${title}</h1>
     <p style="color:#64748b;font-size:14px;line-height:1.5">${message}</p>
     <p style="color:#94a3b8;font-size:12px;margin-top:20px">You can close this window.</p>
@@ -77,45 +90,67 @@ router.get(
 </body>`);
     };
 
-    if (oauthError) return close('Authorisation cancelled', `Google reported: ${oauthError}`);
-    if (!code || !state) return close('Something went wrong', 'Google did not send an authorisation code.');
+    if (oauthError)
+      return close("Authorisation cancelled", `Google reported: ${oauthError}`);
+    if (!code || !state)
+      return close(
+        "Something went wrong",
+        "Google did not send an authorisation code.",
+      );
 
     const claim = consumeOAuthState(state);
     if (!claim) {
-      return close('That link has expired', 'Please start the connection again from the Connections page.');
+      return close(
+        "That link has expired",
+        "Please start the connection again from the Connections page.",
+      );
     }
 
-    const connection = await Connection.findById(claim.connectionId).select('+data');
-    if (!connection) return close('Connection not found', 'It may have been deleted.');
+    const connection = await Connection.findById(claim.connectionId).select(
+      "+data",
+    );
+    if (!connection)
+      return close("Connection not found", "It may have been deleted.");
 
     const config = decryptJson<Record<string, any>>(connection.data as string);
 
     try {
       const tokens = await exchangeGoogleCode({
         code,
-        clientId: String(config.clientId ?? ''),
-        clientSecret: String(config.clientSecret ?? ''),
+        clientId: String(config.clientId ?? ""),
+        clientSecret: String(config.clientSecret ?? ""),
         redirectUri: googleRedirectUri(),
       });
 
       if (!tokens.refreshToken) {
         return close(
-          'Google did not return a refresh token',
-          'This usually means the account was already connected. Remove SVASTHA Automator from your Google account permissions and try again.',
+          "Google did not return a refresh token",
+          "This usually means the account was already connected. Remove SVASTHA Automator from your Google account permissions and try again.",
         );
       }
 
-      const merged = { ...config, refreshToken: tokens.refreshToken, scope: tokens.scope };
-      connection.set('data', encryptJson(merged));
-      connection.set('preview', { ...(connection.preview ?? {}), scope: tokens.scope });
-      connection.set('lastTestedAt', new Date());
-      connection.set('lastTestOk', true);
-      connection.set('lastTestError', undefined);
+      const merged = {
+        ...config,
+        refreshToken: tokens.refreshToken,
+        scope: tokens.scope,
+      };
+      connection.set("data", encryptJson(merged));
+      connection.set("preview", {
+        ...(connection.preview ?? {}),
+        scope: tokens.scope,
+      });
+      connection.set("lastTestedAt", new Date());
+      connection.set("lastTestOk", true);
+      connection.set("lastTestError", undefined);
       await connection.save();
 
-      return close('Google connected', 'You can now use this account in your workflows.', true);
+      return close(
+        "Google connected",
+        "You can now use this account in your workflows.",
+        true,
+      );
     } catch (error) {
-      return close('Google refused the connection', describeGoogleError(error));
+      return close("Google refused the connection", describeGoogleError(error));
     }
   }),
 );
@@ -124,17 +159,19 @@ router.use(requireAuth);
 
 /** Starts the consent flow for a saved Google OAuth connection. */
 router.post(
-  '/:id/oauth/google/start',
+  "/:id/oauth/google/start",
   asyncHandler(async (req, res) => {
-    const connection = await Connection.findById(req.params.id).select('+data');
-    if (!connection) throw AppError.notFound('Connection not found');
-    if (connection.type !== 'googleOAuth2') {
-      throw AppError.badRequest('That connection does not use Google sign-in');
+    const connection = await Connection.findById(req.params.id).select("+data");
+    if (!connection) throw AppError.notFound("Connection not found");
+    if (connection.type !== "googleOAuth2") {
+      throw AppError.badRequest("That connection does not use Google sign-in");
     }
 
     const config = decryptJson<Record<string, any>>(connection.data as string);
     if (!config.clientId || !config.clientSecret) {
-      throw AppError.badRequest('Add the Client ID and Client secret first, then save.');
+      throw AppError.badRequest(
+        "Add the Client ID and Client secret first, then save.",
+      );
     }
 
     const url = buildGoogleAuthUrl({
@@ -147,11 +184,15 @@ router.post(
   }),
 );
 
-function buildPreview(type: string, config: Record<string, unknown>): Record<string, unknown> {
+function buildPreview(
+  type: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
   const definition = getConnectionDefinition(type);
   const preview: Record<string, unknown> = {};
   for (const field of definition?.previewFields ?? []) {
-    if (config[field] !== undefined && config[field] !== '') preview[field] = config[field];
+    if (config[field] !== undefined && config[field] !== "")
+      preview[field] = config[field];
   }
   return preview;
 }
@@ -161,12 +202,19 @@ function buildPreview(type: string, config: Record<string, unknown>): Record<str
  * can see which email to share their spreadsheet with, without us ever showing
  * the private key back to them.
  */
-function enrichGoogleConfig(type: string, config: Record<string, unknown>): Record<string, unknown> {
-  if (type !== 'googleServiceAccount' || !config.serviceAccountJson) return config;
+function enrichGoogleConfig(
+  type: string,
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (type !== "googleServiceAccount" || !config.serviceAccountJson)
+    return config;
 
   try {
     const raw = config.serviceAccountJson;
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : (raw as Record<string, unknown>);
+    const parsed =
+      typeof raw === "string"
+        ? JSON.parse(raw)
+        : (raw as Record<string, unknown>);
     return {
       ...config,
       clientEmail: parsed.client_email ?? config.clientEmail,
@@ -175,7 +223,7 @@ function enrichGoogleConfig(type: string, config: Record<string, unknown>): Reco
     };
   } catch {
     throw AppError.badRequest(
-      'That does not look like a valid service account JSON key. Paste the whole file you downloaded from Google Cloud.',
+      "That does not look like a valid service account JSON key. Paste the whole file you downloaded from Google Cloud.",
     );
   }
 }
@@ -187,7 +235,7 @@ function mergeSecrets(
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...incoming };
   for (const [key, value] of Object.entries(incoming)) {
-    if (value === MASK || value === '') {
+    if (value === MASK || value === "") {
       if (existing[key] !== undefined) merged[key] = existing[key];
     }
   }
@@ -195,7 +243,7 @@ function mergeSecrets(
 }
 
 router.get(
-  '/',
+  "/",
   asyncHandler(async (_req, res) => {
     const connections = await Connection.find().sort({ type: 1, name: 1 });
     res.json({ connections: connections.map((c) => c.toJSON()) });
@@ -203,17 +251,18 @@ router.get(
 );
 
 router.post(
-  '/',
+  "/",
   asyncHandler(async (req, res) => {
     const schema = z.object({
-      name: z.string().min(1, 'Give the connection a name'),
+      name: z.string().min(1, "Give the connection a name"),
       type: z.string().min(1),
       config: z.record(z.unknown()),
     });
     const data = schema.parse(req.body);
 
     const definition = getConnectionDefinition(data.type);
-    if (!definition) throw AppError.badRequest(`Unknown connection type "${data.type}"`);
+    if (!definition)
+      throw AppError.badRequest(`Unknown connection type "${data.type}"`);
 
     for (const property of definition.properties) {
       if (property.required && !data.config[property.name]) {
@@ -237,16 +286,20 @@ router.post(
 
 /** Returns the config with secrets masked, so the edit form can be pre-filled. */
 router.get(
-  '/:id/config',
+  "/:id/config",
   asyncHandler(async (req, res) => {
-    const connection = await Connection.findById(req.params.id).select('+data');
-    if (!connection) throw AppError.notFound('Connection not found');
+    const connection = await Connection.findById(req.params.id).select("+data");
+    if (!connection) throw AppError.notFound("Connection not found");
 
-    const config = decryptJson<Record<string, unknown>>(connection.data as string);
+    const config = decryptJson<Record<string, unknown>>(
+      connection.data as string,
+    );
     const definition = getConnectionDefinition(connection.type);
     const secretNames = new Set(
       (definition?.properties ?? [])
-        .filter((property) => /password|secret|token|value/i.test(property.name))
+        .filter((property) =>
+          /password|secret|token|value/i.test(property.name),
+        )
         .map((property) => property.name),
     );
 
@@ -260,7 +313,7 @@ router.get(
 );
 
 router.put(
-  '/:id',
+  "/:id",
   asyncHandler(async (req, res) => {
     const schema = z.object({
       name: z.string().min(1).optional(),
@@ -268,16 +321,26 @@ router.put(
     });
     const data = schema.parse(req.body);
 
-    const connection = await Connection.findById(req.params.id).select('+data');
-    if (!connection) throw AppError.notFound('Connection not found');
+    const connection = await Connection.findById(req.params.id).select("+data");
+    if (!connection) throw AppError.notFound("Connection not found");
 
-    if (data.name) connection.set('name', data.name);
+    if (data.name) connection.set("name", data.name);
 
     if (data.config) {
-      const existing = decryptJson<Record<string, unknown>>(connection.data as string);
-      const merged = enrichGoogleConfig(connection.type, mergeSecrets(data.config, existing));
-      connection.set('data', encryptJson(merged));
-      connection.set('preview', buildPreview(connection.type, merged));
+      const existing = decryptJson<Record<string, unknown>>(
+        connection.data as string,
+      );
+      const merged = enrichGoogleConfig(
+        connection.type,
+        mergeSecrets(data.config, existing),
+      );
+      connection.set("data", encryptJson(merged));
+      connection.set("preview", buildPreview(connection.type, merged));
+
+      // Editing an SMTP connection must bust the transporter pool — a stale
+      // pooled connection keeps using old credentials until server restarts,
+      // causing "Connection timeout" on the very next test or send.
+      if (connection.type === "smtp") clearTransporterCache();
     }
 
     await connection.save();
@@ -286,36 +349,36 @@ router.put(
 );
 
 router.post(
-  '/:id/test',
+  "/:id/test",
   asyncHandler(async (req, res) => {
-    const connection = await Connection.findById(req.params.id).select('+data');
-    if (!connection) throw AppError.notFound('Connection not found');
+    const connection = await Connection.findById(req.params.id).select("+data");
+    if (!connection) throw AppError.notFound("Connection not found");
 
     const config = decryptJson<Record<string, any>>(connection.data as string);
     let ok = true;
     let error: string | undefined;
 
     try {
-      if (connection.type === 'smtp') {
+      if (connection.type === "smtp") {
         await getTransporter(config).verify();
-      } else if (connection.type === 'googleServiceAccount') {
+      } else if (connection.type === "googleServiceAccount") {
         readServiceAccount(config);
         await getGoogleAccessToken(config);
 
         // Only meaningful once an address to send as has been set.
         if (config.impersonateUser) {
           const profile = await verifyGmailAccess(config);
-          connection.set('preview', {
+          connection.set("preview", {
             ...(connection.preview ?? {}),
             sendsAs: profile.emailAddress,
           });
         }
-      } else if (connection.type === 'googleOAuth2') {
+      } else if (connection.type === "googleOAuth2") {
         if (!config.refreshToken) {
           throw new Error('Not authorised yet — click "Connect with Google".');
         }
         const profile = await verifyGmailAccess(config);
-        connection.set('preview', {
+        connection.set("preview", {
           ...(connection.preview ?? {}),
           account: profile.emailAddress,
         });
@@ -333,9 +396,9 @@ router.post(
       error = toErrorMessage(err);
     }
 
-    connection.set('lastTestedAt', new Date());
-    connection.set('lastTestOk', ok);
-    connection.set('lastTestError', error);
+    connection.set("lastTestedAt", new Date());
+    connection.set("lastTestOk", ok);
+    connection.set("lastTestError", error);
     await connection.save();
 
     res.json({ ok, error });
@@ -343,10 +406,10 @@ router.post(
 );
 
 router.delete(
-  '/:id',
+  "/:id",
   asyncHandler(async (req, res) => {
     const connection = await Connection.findById(req.params.id);
-    if (!connection) throw AppError.notFound('Connection not found');
+    if (!connection) throw AppError.notFound("Connection not found");
     await connection.deleteOne();
     res.json({ ok: true });
   }),
