@@ -31,7 +31,7 @@ export function createApp(): express.Express {
         "http://localhost:8080",
         "https://svastha.fit",
         "https://www.svastha.fit",
-        "https://campaign.svastha",
+        "https://campaign.svastha.fit",
         ...env.corsOrigins,
       ];
 
