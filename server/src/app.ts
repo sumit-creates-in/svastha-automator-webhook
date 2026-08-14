@@ -1,17 +1,17 @@
-import path from 'node:path';
-import compression from 'compression';
-import cookieParser from 'cookie-parser';
-import cors from 'cors';
-import express, { type Request, type Response } from 'express';
-import helmet from 'helmet';
-import { env } from './config/env';
-import { errorHandler, notFoundHandler } from './middleware/errorHandler';
-import routes from './routes';
+import path from "node:path";
+import compression from "compression";
+import cookieParser from "cookie-parser";
+import cors from "cors";
+import express, { type Request, type Response } from "express";
+import helmet from "helmet";
+import { env } from "./config/env";
+import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import routes from "./routes";
 
 export function createApp(): express.Express {
   const app = express();
 
-  app.set('trust proxy', 1);
+  app.set("trust proxy", 1);
 
   app.use(
     helmet({
@@ -22,45 +22,66 @@ export function createApp(): express.Express {
   app.use(compression());
   app.use(cookieParser());
 
-  app.use(
-    cors({
-      origin: (origin, callback) => {
-        if (!origin) return callback(null, true);
-        if (env.corsOrigins.includes('*') || env.corsOrigins.includes(origin)) {
-          return callback(null, true);
-        }
-        // Same-origin deployments (client served by this server) never hit CORS.
-        return callback(null, env.appUrl === origin);
-      },
-      credentials: true,
-    }),
-  );
+  const corsOptions: cors.CorsOptions = {
+    origin: (origin, callback) => {
+      // No origin = same-origin / server-to-server — always allow.
+      if (!origin) return callback(null, true);
+
+      const allowed = [
+        "http://localhost:8080",
+        "https://svastha.fit",
+        "https://www.svastha.fit",
+        "https://campaign.svastha",
+        ...env.corsOrigins,
+      ];
+
+      if (allowed.includes("*") || allowed.includes(origin)) {
+        return callback(null, origin);
+      }
+
+      // Same-origin deployments (client served by this server) never hit CORS.
+      if (env.appUrl === origin) {
+        return callback(null, origin);
+      }
+
+      return callback(new Error(`CORS: origin '${origin}' not allowed`));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-webhook-token"],
+    credentials: true,
+    optionsSuccessStatus: 200, // Some legacy browsers (IE11) choke on 204.
+  };
+
+  // Handle OPTIONS preflight for every route BEFORE any other middleware or routes.
+  app.options("*", cors(corsOptions));
+  app.use(cors(corsOptions));
 
   // Keep the raw body around so webhook HMAC signatures can be verified.
   app.use(
     express.json({
-      limit: '5mb',
+      limit: "5mb",
       verify: (req, _res, buffer) => {
-        (req as Request & { rawBody?: string }).rawBody = buffer.toString('utf8');
+        (req as Request & { rawBody?: string }).rawBody =
+          buffer.toString("utf8");
       },
     }),
   );
-  app.use(express.urlencoded({ extended: true, limit: '5mb' }));
-  app.use(express.text({ type: ['text/*', 'application/xml'], limit: '5mb' }));
+  app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+  app.use(express.text({ type: ["text/*", "application/xml"], limit: "5mb" }));
 
-  app.use('/api', routes);
+  app.use("/api", routes);
 
   // Serve the built React app in production (single Railway service).
-  const clientDist = path.resolve(__dirname, '../../client/dist');
-  app.use(express.static(clientDist, { maxAge: '1h', index: false }));
+  const clientDist = path.resolve(__dirname, "../../client/dist");
+  app.use(express.static(clientDist, { maxAge: "1h", index: false }));
   app.get(/^\/(?!api).*/, (_req: Request, res: Response) => {
-    res.sendFile(path.join(clientDist, 'index.html'), (error) => {
+    res.sendFile(path.join(clientDist, "index.html"), (error) => {
       if (error) {
         res
           .status(200)
-          .type('html')
+          .type("html")
           .send(
-            '<h1>SVASTHA Automator API is running</h1><p>The web interface has not been built yet. Run <code>npm run build</code>.</p>',
+            "<h1>SVASTHA Automator API is running</h1><p>The web interface has not been built yet. Run <code>npm run build</code>.</p>",
           );
       }
     });
