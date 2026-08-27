@@ -156,6 +156,80 @@ const helpers = {
   },
 
   /**
+   * Resolves a date value to a formatted string like "29 August 2026".
+   * Understands the keywords "today" and "tomorrow" in addition to any
+   * parseable date (ISO, DD/MM/YYYY, epoch, etc.).
+   *
+   *   $fn.friendlyDate("today")          -> "27 August 2026"
+   *   $fn.friendlyDate("tomorrow")       -> "28 August 2026"
+   *   $fn.friendlyDate("2026-08-29")     -> "29 August 2026"
+   *   $fn.friendlyDate($json.preferred_day) -> resolves whatever the user sent
+   */
+  friendlyDate: (v: unknown, timezone = "Asia/Kolkata") => {
+    const raw = String(v ?? "")
+      .trim()
+      .toLowerCase();
+    let base: Date;
+    if (raw === "today" || raw === "") {
+      base = new Date();
+    } else if (raw === "tomorrow") {
+      base = new Date();
+      base.setDate(base.getDate() + 1);
+    } else if (raw === "yesterday") {
+      base = new Date();
+      base.setDate(base.getDate() - 1);
+    } else {
+      const parsed = new Date(String(v));
+      if (Number.isNaN(parsed.getTime())) return "";
+      base = parsed;
+    }
+    return formatDateTime(base, "D MMMM YYYY", timezone);
+  },
+
+  /**
+   * Resolves a time value to a formatted 12-hour string like "04:00 PM".
+   * Accepts 24-hour ("16:00"), 12-hour ("4:00 pm"), or any ISO date string.
+   *
+   *   $fn.friendlyTime("16:00")   -> "04:00 PM"
+   *   $fn.friendlyTime("9:30")    -> "09:30 AM"
+   *   $fn.friendlyTime("4:00 pm") -> "04:00 PM"
+   */
+  friendlyTime: (v: unknown) => {
+    const input = String(v ?? "").trim();
+    if (!input) return "";
+
+    // Try HH:mm or h:mm (with optional am/pm)
+    const match = input.match(/^(\d{1,2}):(\d{2})(?:\s*(am|pm))?$/i);
+    if (match) {
+      let hours = parseInt(match[1], 10);
+      const minutes = match[2];
+      const ampm = match[3];
+
+      let period: "AM" | "PM";
+      if (ampm) {
+        period = ampm.toUpperCase() as "AM" | "PM";
+        if (period === "PM" && hours < 12) hours += 12;
+        if (period === "AM" && hours === 12) hours = 0;
+      } else {
+        // 24-hour input
+        period = hours >= 12 ? "PM" : "AM";
+      }
+
+      const display12 = hours % 12 === 0 ? 12 : hours % 12;
+      return `${String(display12).padStart(2, "0")}:${minutes} ${period}`;
+    }
+
+    // Fallback: parse as a full date and extract the time part
+    const d = new Date(input);
+    if (Number.isNaN(d.getTime())) return "";
+    const h = d.getHours();
+    const m = d.getMinutes();
+    const period = h >= 12 ? "PM" : "AM";
+    const display12 = h % 12 === 0 ? 12 : h % 12;
+    return `${String(display12).padStart(2, "0")}:${String(m).padStart(2, "0")} ${period}`;
+  },
+
+  /**
    * Forces a value to be stored as literal text in Google Sheets.
    *
    * Sheets parses anything that looks like a number or a time, so "2:50 pm"
