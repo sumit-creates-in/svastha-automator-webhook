@@ -198,8 +198,8 @@ const helpers = {
     const input = String(v ?? "").trim();
     if (!input) return "";
 
-    // Try HH:mm or h:mm (with optional am/pm)
-    const match = input.match(/^(\d{1,2}):(\d{2})(?:\s*(am|pm))?$/i);
+    // HH:mm:ss  or  HH:mm  or  h:mm[:ss]  with optional am/pm
+    const match = input.match(/^(\d{1,2}):(\d{2})(?::\d{2})?(?:\s*(am|pm))?$/i);
     if (match) {
       let hours = parseInt(match[1], 10);
       const minutes = match[2];
@@ -219,7 +219,7 @@ const helpers = {
       return `${String(display12).padStart(2, "0")}:${minutes} ${period}`;
     }
 
-    // Fallback: parse as a full date and extract the time part
+    // Fallback: try parsing as a full ISO / date string and pull the local time
     const d = new Date(input);
     if (Number.isNaN(d.getTime())) return "";
     const h = d.getHours();
