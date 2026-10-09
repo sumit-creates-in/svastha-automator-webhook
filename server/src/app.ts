@@ -7,6 +7,7 @@ import helmet from "helmet";
 import { env } from "./config/env";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import routes from "./routes";
+import { mountMcp } from "./mcp";
 
 export function createApp(): express.Express {
   const app = express();
@@ -68,6 +69,9 @@ export function createApp(): express.Express {
   );
   app.use(express.urlencoded({ extended: true, limit: "5mb" }));
   app.use(express.text({ type: ["text/*", "application/xml"], limit: "5mb" }));
+
+  // Claude connector (MCP), POST /mcp or /mcp/<key>; key in env MCP_KEY. See src/mcp.ts.
+  mountMcp(app);
 
   app.use("/api", routes);
 
