@@ -56,9 +56,9 @@ test('the connector refuses calls without the right key', async () => {
 test('handshake and tool list work with the key (header or path)', async () => {
   process.env.MCP_KEY = 'k'.repeat(32);
   await withApp(async (base) => {
-    const init = await (await rpc(base, '/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, { Authorization: `Bearer ${'k'.repeat(32)}` })).json();
+    const init: any = await (await rpc(base, '/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, { Authorization: `Bearer ${'k'.repeat(32)}` })).json();
     assert.equal(init.result.serverInfo.name, 'svastha-automator');
-    const tools = await (await rpc(base, `/mcp/${'k'.repeat(32)}`, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).json();
+    const tools: any = await (await rpc(base, `/mcp/${'k'.repeat(32)}`, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).json();
     const names = tools.result.tools.map((t: { name: string }) => t.name);
     for (const n of ['automator_status', 'error_summary', 'get_workflow', 'get_run', 'update_step', 'undo_change']) assert.ok(names.includes(n), n);
     assert.ok(!names.some((n: string) => /test_run|send/i.test(n)), 'no tool may send messages');
