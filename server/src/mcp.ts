@@ -12,12 +12,16 @@
  *  - Secrets are never returned: header values, tokens, keys, passwords and the secret parts of webhook URLs
  *    are masked in everything this connector answers. Customer phone numbers / emails in run data are masked
  *    unless include_data is asked for explicitly.
+ *  - The one exception: create_alert_email_workflow returns the new workflow's address (the caller already holds
+ *    the token that protects it, because it chose it).
  *  - Every change is saved first in the "mcp_changes" collection (before + after) and can be undone with
  *    undo_change. Nothing here sends messages: there is no "test run" tool.
  */
 import crypto from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import mongoose from 'mongoose';
+import { nanoid } from 'nanoid';
+import { env } from './config/env';
 import { resolveParams } from './engine/executor';
 import { defaultParamsFor, requireNodeDefinition } from './engine/registry';
 import { syncWorkflowSchedules } from './engine/scheduler';
@@ -39,7 +43,9 @@ Safe way to work:
 3. update_step with a small change and a reason (saved with an undo record), set_workflow_active to switch on/off.
 4. add_crm_step adds a "send to the SVASTHA CRM" step (address copied from an existing CRM step, never typed);
    test_crm_step runs ONE CRM step with a sample body ([TEST] leads only) — nothing else in the workflow runs.
-5. list_changes / undo_change if a change was wrong.
+5. create_alert_email_workflow sets up a token-protected "webhook -> send email" workflow (switched off) for
+   alert emails from another SVASTHA app; switch it on with set_workflow_active.
+6. list_changes / undo_change if a change was wrong.
 Never put customer personal data in a reason. Changing a step that sends messages changes what customers get:
 only do it when the owner asked.`;
 
@@ -178,6 +184,33 @@ function webhookScope(w: any, body: Record<string, unknown>): ExpressionScope {
   } as unknown as ExpressionScope;
 }
 
+/**
+ * The two steps of an alert-email workflow: a webhook that only accepts requests carrying the token in the
+ * x-alert-token header, and a Send Email step whose recipients, subject and body come from the request.
+ * The token is what keeps this from being an open mail relay, so it must be long and random.
+ */
+export function alertEmailNodes(connectionId: string, token: string, fromName: string) {
+  const trigger = {
+    id: newId('node'), type: 'webhookTrigger', name: 'Alert from app', position: { x: 0, y: 0 },
+    params: {
+      ...defaultParamsFor('webhookTrigger'),
+      httpMethod: 'POST', path: '', authentication: 'header', authHeaderName: 'x-alert-token', authToken: token,
+      responseMode: 'immediately', dedupeWindowSeconds: 0, rawBody: false,
+    },
+    disabled: false, onError: 'stop', retryOnFail: false, maxTries: 3,
+  };
+  const email = {
+    id: newId('node'), type: 'sendEmail', name: 'Send alert email', position: { x: 320, y: 0 },
+    params: {
+      ...defaultParamsFor('sendEmail'),
+      connection: connectionId, to: '{{ $json.body.to }}', fromName, subject: '{{ $json.body.subject }}',
+      format: 'both', html: '{{ $json.body.html }}', text: '{{ $json.body.text }}', attachments: [],
+    },
+    disabled: false, onError: 'stop', retryOnFail: true, maxTries: 3,
+  };
+  return { nodes: [trigger, email], edges: [{ id: newId('edge'), source: trigger.id, target: email.id, sourceHandle: 'main', targetHandle: 'main' }] };
+}
+
 // ------------------------------------------------------------------ tools --
 const TOOLS = [
   {
@@ -253,6 +286,21 @@ const TOOLS = [
       type: 'object',
       properties: { workflow: { type: 'string' }, step: { type: 'string' }, body: { type: 'object', description: 'what the webhook would receive as its body' } },
       required: ['workflow', 'step', 'body'],
+    },
+  },
+  {
+    name: 'create_alert_email_workflow',
+    description: 'Create a NEW workflow (switched off): a webhook that needs the header "x-alert-token: <token>", then a Send Email step through a saved email/Google connection; to, subject, html and text come from the request body. For alert emails sent by another SVASTHA app (e.g. the CRM). The caller chooses the token (at least 32 random characters) and stores it where the sending app reads it. Returns the webhook address. Saved with an undo record (undo deletes the workflow).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'workflow name, e.g. "CRM alerts -> email"' },
+        connection: { type: 'string', description: 'saved connection name or id to send with' },
+        token: { type: 'string', description: 'at least 32 random characters' },
+        from_name: { type: 'string', description: 'sender name shown in the inbox' },
+        reason: { type: 'string' },
+      },
+      required: ['name', 'connection', 'token', 'from_name', 'reason'],
     },
   },
   {
@@ -495,6 +543,41 @@ async function callTool(name: string, args: Record<string, any>) {
       }
     }
 
+    case 'create_alert_email_workflow': {
+      const reason = String(args.reason ?? '').trim();
+      if (reason.length < 5) throw new ToolError('Give a short reason (it is saved with the change).');
+      const name = String(args.name ?? '').trim();
+      if (!name) throw new ToolError('name is required.');
+      if (await Workflow.exists({ name })) throw new ToolError(`A workflow called "${name}" already exists.`);
+      const token = String(args.token ?? '');
+      if (token.length < 32 || !/^[A-Za-z0-9_-]+$/.test(token)) throw new ToolError('token must be at least 32 characters of letters, digits, - or _.');
+      const fromName = String(args.from_name ?? '').trim().slice(0, 80);
+      if (!fromName) throw new ToolError('from_name is required.');
+      const ref = String(args.connection ?? '').trim();
+      const conn: any = (mongoose.isValidObjectId(ref) ? await Connection.findById(ref) : null) ?? await Connection.findOne({ name: ref });
+      if (!conn) throw new ToolError(`No saved connection "${ref}".`);
+      if (!['smtp', 'googleOAuth2', 'googleServiceAccount'].includes(String(conn.type))) {
+        throw new ToolError(`"${conn.name}" (${conn.type}) cannot send email.`);
+      }
+      const { nodes, edges } = alertEmailNodes(String(conn._id), token, fromName);
+      const problems = validateWorkflow(nodes as unknown as WorkflowNode[], edges as any).filter((p) => p.level === 'error');
+      if (problems.length) throw new ToolError(`The workflow would not be valid: ${problems.map((p) => p.message).join('; ')}`);
+      const w = await Workflow.create({
+        name, description: `Alert emails from another SVASTHA app. Created by the Claude connector: ${reason}`.slice(0, 500),
+        active: false, nodes, edges, webhookId: nanoid(22),
+        settings: { timezone: 'Asia/Kolkata', saveSuccessfulRunData: true, saveFailedRunData: true, timeoutMs: 120000, captureSampleData: false, errorEmailTo: '' },
+        tags: ['alerts'],
+      });
+      const changeId = await recordChange({ kind: 'create_workflow', workflowId: String(w._id), workflowName: w.name, reason, before: null, afterUpdatedAt: (w as any).updatedAt, afterShape: workflowShape(await Workflow.findById(w._id)) });
+      return text({
+        ok: true, changeId, workflowId: String(w._id), workflow: w.name, active: false, connection: conn.name,
+        webhookUrl: `${env.appUrl}/api/webhooks/${w.webhookId}`,
+        header: 'x-alert-token',
+        body: '{"to": "a@x.com, b@y.com", "subject": "...", "html": "<p>...</p>", "text": "..."}',
+        next: 'Switch it on with set_workflow_active once the sending app has the address and the token.',
+      });
+    }
+
     case 'set_workflow_active': {
       const reason = String(args.reason ?? '').trim();
       if (reason.length < 5) throw new ToolError('Give a short reason (it is saved with the change).');
@@ -532,6 +615,12 @@ async function callTool(name: string, args: Record<string, any>) {
         : ch.afterUpdatedAt && new Date((w as any).updatedAt).getTime() !== new Date(ch.afterUpdatedAt).getTime();
       if (changedSince) {
         throw new ToolError('The workflow was changed again after this change; undo would overwrite that. Fix it by hand or with update_step.');
+      }
+      if (ch.kind === 'create_workflow') {
+        // Undoing a creation removes the workflow again; only possible while nobody has changed it.
+        await Workflow.deleteOne({ _id: w._id });
+        await changes().updateOne({ _id: ch._id }, { $set: { undone: true, undoneAt: new Date(), undoReason: reason } });
+        return text({ ok: true, workflow: w.name, removed: true });
       }
       const prev = ch.before;
       w.set({ nodes: prev.nodes, edges: prev.edges, active: prev.active, settings: prev.settings });
