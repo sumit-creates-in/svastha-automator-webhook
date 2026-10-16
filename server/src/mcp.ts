@@ -18,8 +18,10 @@
 import crypto from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import mongoose from 'mongoose';
+import { resolveParams } from './engine/executor';
+import { defaultParamsFor, requireNodeDefinition } from './engine/registry';
 import { syncWorkflowSchedules } from './engine/scheduler';
-import type { WorkflowNode } from './engine/types';
+import type { ExpressionScope, WorkflowNode } from './engine/types';
 import { Connection } from './models/Connection';
 import { Run } from './models/Run';
 import { Workflow } from './models/Workflow';
@@ -35,7 +37,9 @@ Safe way to work:
 1. automator_status or error_summary to see what is failing.
 2. get_workflow to read the steps (secrets are masked), get_run to see what a step received and why it failed.
 3. update_step with a small change and a reason (saved with an undo record), set_workflow_active to switch on/off.
-4. list_changes / undo_change if a change was wrong.
+4. add_crm_step adds a "send to the SVASTHA CRM" step (address copied from an existing CRM step, never typed);
+   test_crm_step runs ONE CRM step with a sample body ([TEST] leads only) — nothing else in the workflow runs.
+5. list_changes / undo_change if a change was wrong.
 Never put customer personal data in a reason. Changing a step that sends messages changes what customers get:
 only do it when the owner asked.`;
 
@@ -121,6 +125,17 @@ async function findWorkflow(ref: unknown) {
 
 const changes = () => mongoose.connection.collection('mcp_changes');
 
+/**
+ * What a change touches: steps, links, on/off and settings. Undo compares this, not updatedAt — every incoming
+ * webhook saves a payload sample on the workflow (updatedAt moves), which used to block undo after any live run.
+ */
+export function workflowShape(w: any): string {
+  const o = typeof w?.toObject === 'function' ? w.toObject() : w;
+  return crypto.createHash('sha256')
+    .update(JSON.stringify({ nodes: o?.nodes ?? [], edges: o?.edges ?? [], active: o?.active ?? null, settings: o?.settings ?? {} }))
+    .digest('hex');
+}
+
 async function recordChange(entry: Record<string, unknown>) {
   const doc = { ...entry, at: new Date(), by: 'claude-mcp', undone: false };
   const res = await changes().insertOne(doc);
@@ -143,6 +158,24 @@ async function errorGroups(hours: number) {
     last: r.last,
     error: maskPersonal(maskSecrets(r._id.msg)),
   }));
+}
+
+/**
+ * The SVASTHA CRM's intake addresses (open webhook, /lead, /event). The two CRM tools below only ever touch an
+ * HTTP step whose URL is one of these, so they can never send an email, a WhatsApp message or call anything else.
+ */
+const CRM_INTAKE = /^https:\/\/[^/]+\/v1\/intake\/(webhook\/[^/?#\s]+|lead|event)\/?$/;
+export const isCrmStep = (node: any) => node?.type === 'httpRequest' && CRM_INTAKE.test(String(node.params?.url ?? ''));
+const newId = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 9)}${Date.now().toString(36).slice(-3)}`;
+
+/** Expression scope for a step that sits right after a webhook trigger, as the engine builds it. */
+function webhookScope(w: any, body: Record<string, unknown>): ExpressionScope {
+  const trigger = { method: 'POST', path: '', headers: {}, query: {}, body };
+  return {
+    $json: trigger, $trigger: trigger, $node: {}, $vars: (w.variables ?? {}) as Record<string, unknown>,
+    $runId: 'connector-test', $workflowId: String(w._id), $workflowName: String(w.name),
+    $now: new Date().toISOString(), $timestamp: Date.now(), $itemIndex: 0, $itemCount: 1,
+  } as unknown as ExpressionScope;
 }
 
 // ------------------------------------------------------------------ tools --
@@ -195,6 +228,31 @@ const TOOLS = [
         reason: { type: 'string' },
       },
       required: ['workflow', 'step', 'reason'],
+    },
+  },
+  {
+    name: 'add_crm_step',
+    description: 'Add an HTTP step that sends the lead from this workflow to the SVASTHA CRM. The CRM address (it contains a secret) is copied server-side from an existing CRM step ("url_from": {workflow, step}), never typed. Connected from the "after" step (default: the trigger), with onError continue and 3 tries, so it never blocks the rest of the workflow. Saved with an undo record.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow: { type: 'string' },
+        name: { type: 'string', description: 'name of the new step, e.g. "Send to CRM"' },
+        body_json: { type: 'string', description: 'JSON body template ({{ }} expressions allowed)' },
+        url_from: { type: 'object', properties: { workflow: { type: 'string' }, step: { type: 'string' } }, required: ['workflow', 'step'] },
+        after: { type: 'string', description: 'step name or id to connect from (default: the trigger)' },
+        reason: { type: 'string' },
+      },
+      required: ['workflow', 'name', 'body_json', 'url_from', 'reason'],
+    },
+  },
+  {
+    name: 'test_crm_step',
+    description: 'Run ONE CRM step (an HTTP step that sends to the SVASTHA CRM intake) with a sample webhook body, without running anything else in the workflow. The resolved body must name the lead "[TEST] ..." so the CRM files it as a test lead. Returns the CRM answer.',
+    inputSchema: {
+      type: 'object',
+      properties: { workflow: { type: 'string' }, step: { type: 'string' }, body: { type: 'object', description: 'what the webhook would receive as its body' } },
+      required: ['workflow', 'step', 'body'],
     },
   },
   {
@@ -341,8 +399,100 @@ async function callTool(name: string, args: Record<string, any>) {
       w.set('nodes', nodes);
       await w.save();
       await syncWorkflowSchedules(w);
-      const changeId = await recordChange({ kind: 'update_step', workflowId: String(w._id), workflowName: w.name, step: node.name, reason, before, afterUpdatedAt: (w as any).updatedAt });
+      const changeId = await recordChange({ kind: 'update_step', workflowId: String(w._id), workflowName: w.name, step: node.name, reason, before, afterUpdatedAt: (w as any).updatedAt, afterShape: workflowShape(await Workflow.findById(w._id)) });
       return text({ ok: true, changeId, workflow: w.name, step: node.name, params: maskSecrets(node.params), onError: node.onError, retryOnFail: node.retryOnFail, disabled: node.disabled });
+    }
+
+    case 'add_crm_step': {
+      const reason = String(args.reason ?? '').trim();
+      if (reason.length < 5) throw new ToolError('Give a short reason (it is saved with the change).');
+      const name = String(args.name ?? '').trim();
+      if (!name) throw new ToolError('name is required.');
+      const bodyJson = String(args.body_json ?? '');
+      if (!bodyJson.trim().startsWith('{')) throw new ToolError('body_json must be a JSON object template.');
+
+      const src = await findWorkflow(args.url_from?.workflow);
+      const srcNode: any = ((src.nodes ?? []) as any[]).find((n) => n.id === args.url_from?.step || n.name === args.url_from?.step);
+      if (!srcNode) throw new ToolError(`No step "${args.url_from?.step}" in "${src.name}".`);
+      if (!isCrmStep(srcNode)) throw new ToolError(`"${srcNode.name}" in "${src.name}" is not a CRM intake step; copy the address from one that is.`);
+
+      const w = await findWorkflow(args.workflow);
+      const nodes = JSON.parse(JSON.stringify(w.nodes ?? [])) as any[];
+      const edges = JSON.parse(JSON.stringify(w.edges ?? [])) as any[];
+      if (nodes.some((n) => n.name === name)) throw new ToolError(`"${w.name}" already has a step called "${name}".`);
+      const fromRef = args.after ? String(args.after) : null;
+      const from = fromRef
+        ? nodes.find((n) => n.id === fromRef || n.name === fromRef)
+        : nodes.find((n) => requireNodeDefinition(n.type).group === 'trigger');
+      if (!from) throw new ToolError(fromRef ? `No step "${fromRef}" in "${w.name}".` : `"${w.name}" has no trigger.`);
+
+      const before = JSON.parse(JSON.stringify(w.toObject()));
+      const node = {
+        id: newId('node'),
+        type: 'httpRequest',
+        name,
+        position: { x: Number(from.position?.x ?? 0) + 320, y: Number(from.position?.y ?? 0) + 220 },
+        params: {
+          ...defaultParamsFor('httpRequest'),
+          method: 'POST',
+          url: srcNode.params.url,
+          bodyType: 'json',
+          bodyJson,
+          bodyFields: [],
+          queryParams: [],
+          headers: [],
+          timeoutMs: 120000,
+          ignoreSslErrors: false,
+          neverError: false,
+          responseFormat: 'auto',
+        },
+        disabled: false,
+        onError: 'continue',
+        retryOnFail: true,
+        maxTries: 3,
+      };
+      nodes.push(node);
+      // First in the list: the engine runs a step's branches in this order and a failing "stop" step (a Sheet or
+      // an email) ends the whole run — so the lead reaches the CRM before anything else can stop it.
+      edges.unshift({ id: newId('edge'), source: from.id, target: node.id, sourceHandle: 'main', targetHandle: 'main' });
+      const problems = validateWorkflow(nodes, edges).filter((p) => p.level === 'error');
+      if (problems.length) throw new ToolError(`This would break the workflow: ${problems.map((p) => p.message).join('; ')}`);
+      w.set({ nodes, edges });
+      await w.save();
+      await syncWorkflowSchedules(w);
+      const changeId = await recordChange({ kind: 'add_crm_step', workflowId: String(w._id), workflowName: w.name, step: name, reason, before, afterUpdatedAt: (w as any).updatedAt, afterShape: workflowShape(await Workflow.findById(w._id)) });
+      return text({ ok: true, changeId, workflow: w.name, step: name, connectedFrom: from.name, params: maskSecrets(node.params), onError: node.onError, retryOnFail: node.retryOnFail });
+    }
+
+    case 'test_crm_step': {
+      const w = await findWorkflow(args.workflow);
+      const node: any = ((w.nodes ?? []) as any[]).find((n) => n.id === args.step || n.name === args.step);
+      if (!node) throw new ToolError(`No step "${args.step}" in "${w.name}".`);
+      if (!isCrmStep(node)) throw new ToolError(`"${node.name}" is not a CRM intake step; only those can be tested here.`);
+      const body = (args.body && typeof args.body === 'object') ? args.body as Record<string, unknown> : {};
+      const params = resolveParams(node as WorkflowNode, webhookScope(w, body));
+      // Only test leads: the CRM files a "[TEST] ..." name as a test lead (no owner, nobody notified).
+      let resolved: any = null;
+      try { resolved = params.bodyType === 'json' ? JSON.parse(String(params.bodyJson ?? '')) : null; } catch (e) {
+        return text({ ok: false, stage: 'template', error: `The body is not valid JSON after filling it in: ${(e as Error).message}`, body: maskPersonal(String(params.bodyJson ?? '').slice(0, 1500)) });
+      }
+      if (!resolved || !/^\s*\[test\]/i.test(String(resolved.name ?? resolved.full_name ?? ''))) {
+        throw new ToolError('Test bodies must produce a lead named "[TEST] ..." (so the CRM keeps it as a test lead).');
+      }
+      const definition = requireNodeDefinition('httpRequest');
+      const logs: string[] = [];
+      try {
+        const out: any = await definition.execute!({
+          node: { ...node, params: node.params }, params, rawParams: node.params ?? {}, input: { body },
+          scope: webhookScope(w, body), runId: 'connector-test', workflowId: String(w._id),
+          getConnection: async () => { throw new Error('CRM steps use no saved connection'); },
+          resolve: (v: unknown) => v, log: (m: string) => logs.push(m), signal: new AbortController().signal,
+        } as any);
+        const data = out?.data ?? {};
+        return text({ ok: true, sent: maskPersonal(resolved), status: data.statusCode, response: maskPersonal(maskSecrets(clip(data.body ?? data.data ?? null, 1200))) });
+      } catch (e) {
+        return text({ ok: false, stage: 'request', sent: maskPersonal(resolved), error: maskPersonal(maskSecrets(String((e as Error).message).slice(0, 800))) });
+      }
     }
 
     case 'set_workflow_active': {
@@ -358,7 +508,7 @@ async function callTool(name: string, args: Record<string, any>) {
       w.set('active', active);
       await w.save();
       await syncWorkflowSchedules(w);
-      const changeId = await recordChange({ kind: 'set_active', workflowId: String(w._id), workflowName: w.name, active, reason, before, afterUpdatedAt: (w as any).updatedAt });
+      const changeId = await recordChange({ kind: 'set_active', workflowId: String(w._id), workflowName: w.name, active, reason, before, afterUpdatedAt: (w as any).updatedAt, afterShape: workflowShape(await Workflow.findById(w._id)) });
       return text({ ok: true, changeId, workflow: w.name, active });
     }
 
@@ -377,7 +527,10 @@ async function callTool(name: string, args: Record<string, any>) {
       if (ch.undone) throw new ToolError('That change was already undone.');
       const w = await Workflow.findById(ch.workflowId);
       if (!w) throw new ToolError('The workflow no longer exists.');
-      if (ch.afterUpdatedAt && new Date((w as any).updatedAt).getTime() !== new Date(ch.afterUpdatedAt).getTime()) {
+      const changedSince = ch.afterShape
+        ? workflowShape(w) !== ch.afterShape
+        : ch.afterUpdatedAt && new Date((w as any).updatedAt).getTime() !== new Date(ch.afterUpdatedAt).getTime();
+      if (changedSince) {
         throw new ToolError('The workflow was changed again after this change; undo would overwrite that. Fix it by hand or with update_step.');
       }
       const prev = ch.before;

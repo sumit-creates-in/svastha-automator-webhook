@@ -122,7 +122,7 @@ function makeConnectionResolver() {
 }
 
 /** Resolves node params, skipping properties flagged `resolveExpressions: false`. */
-function resolveParams(node: WorkflowNode, scope: ExpressionScope): Record<string, unknown> {
+export function resolveParams(node: WorkflowNode, scope: ExpressionScope): Record<string, unknown> {
   const definition = getNodeDefinition(node.type);
   const skip = new Set(
     (definition?.properties ?? [])
