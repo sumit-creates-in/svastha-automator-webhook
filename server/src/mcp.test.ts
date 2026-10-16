@@ -7,7 +7,8 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { createApp } from './app';
-import { isCrmStep, maskPersonal, maskSecrets } from './mcp';
+import { alertEmailNodes, isCrmStep, maskPersonal, maskSecrets } from './mcp';
+import { validateWorkflow } from './routes/workflow.routes';
 
 async function withApp<T>(run: (base: string) => Promise<T>): Promise<T> {
   const server = http.createServer(createApp());
@@ -88,4 +89,21 @@ test('the CRM tools only ever touch SVASTHA CRM intake steps', () => {
     'https://evil.example/x?u=https://crm.example/v1/intake/lead',   // intake only in the query
   ]) assert.ok(!isCrmStep(http(url)), url);
   assert.ok(!isCrmStep({ type: 'sendEmail', params: { url: 'https://crm.example/v1/intake/lead' } }));
+});
+
+test('alert-email workflows need the token and take recipients and text from the request', () => {
+  const token = 't'.repeat(40);
+  const { nodes, edges } = alertEmailNodes('6aa9134b22b6475283e4527e', token, 'SVASTHA CRM');
+  const [trigger, email] = nodes as any[];
+  assert.equal(trigger.type, 'webhookTrigger');
+  assert.equal(trigger.params.authentication, 'header');
+  assert.equal(trigger.params.authHeaderName, 'x-alert-token');
+  assert.equal(trigger.params.authToken, token);
+  assert.equal(email.type, 'sendEmail');
+  assert.equal(email.params.connection, '6aa9134b22b6475283e4527e');
+  assert.equal(email.params.to, '{{ $json.body.to }}');
+  assert.deepEqual(edges.map((e) => [e.source, e.target]), [[trigger.id, email.id]]);
+  assert.deepEqual(validateWorkflow(nodes as any, edges as any).filter((p) => p.level === 'error'), []);
+  // and the token never shows in what the connector prints
+  assert.equal((maskSecrets(trigger.params) as any).authToken, '<hidden>');
 });
