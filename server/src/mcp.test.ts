@@ -7,7 +7,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { createApp } from './app';
-import { maskPersonal, maskSecrets } from './mcp';
+import { isCrmStep, maskPersonal, maskSecrets } from './mcp';
 
 async function withApp<T>(run: (base: string) => Promise<T>): Promise<T> {
   const server = http.createServer(createApp());
@@ -60,7 +60,7 @@ test('handshake and tool list work with the key (header or path)', async () => {
     assert.equal(init.result.serverInfo.name, 'svastha-automator');
     const tools: any = await (await rpc(base, `/mcp/${'k'.repeat(32)}`, { jsonrpc: '2.0', id: 2, method: 'tools/list' })).json();
     const names = tools.result.tools.map((t: { name: string }) => t.name);
-    for (const n of ['automator_status', 'error_summary', 'get_workflow', 'get_run', 'update_step', 'undo_change']) assert.ok(names.includes(n), n);
+    for (const n of ['automator_status', 'error_summary', 'get_workflow', 'get_run', 'update_step', 'undo_change', 'add_crm_step', 'test_crm_step']) assert.ok(names.includes(n), n);
     assert.ok(!names.some((n: string) => /test_run|send/i.test(n)), 'no tool may send messages');
     const note = await rpc(base, '/mcp', { jsonrpc: '2.0', method: 'notifications/initialized' }, { Authorization: `Bearer ${'k'.repeat(32)}` });
     assert.equal(note.status, 202);
@@ -72,4 +72,20 @@ test('without MCP_KEY set the connector is off', async () => {
   await withApp(async (base) => {
     assert.equal((await rpc(base, '/mcp', { jsonrpc: '2.0', id: 1, method: 'ping' }, { Authorization: 'Bearer anything' })).status, 503);
   });
+});
+
+test('the CRM tools only ever touch SVASTHA CRM intake steps', () => {
+  const http = (url: string) => ({ type: 'httpRequest', params: { url } });
+  assert.ok(isCrmStep(http('https://api-production-eb773.up.railway.app/v1/intake/webhook/abcdef123456')));
+  assert.ok(isCrmStep(http('https://crm.example/v1/intake/lead')));
+  assert.ok(isCrmStep(http('https://crm.example/v1/intake/event')));
+  for (const url of [
+    'https://script.google.com/macros/s/AKfy/exec?gid=1',            // Google Sheet
+    'https://wabiz.example/api/send-message',                        // WhatsApp
+    'https://crm.example/v1/leads/abc/whatsapp',                     // CRM, but not intake
+    'http://crm.example/v1/intake/lead',                             // not https
+    'https://crm.example/v1/intake/webhook/abc/../../admin',         // path tricks
+    'https://evil.example/x?u=https://crm.example/v1/intake/lead',   // intake only in the query
+  ]) assert.ok(!isCrmStep(http(url)), url);
+  assert.ok(!isCrmStep({ type: 'sendEmail', params: { url: 'https://crm.example/v1/intake/lead' } }));
 });
